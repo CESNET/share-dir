@@ -283,30 +283,19 @@ def ssh_base(server: str) -> List[str]:
     return [ssh_bin, *ssh_opts, ssh_target, "--"]
 
 
-def run_remote(server: str, remote_cmd: List[str], *, input_text: Optional[str] = None, dry_run: bool = False) -> subprocess.CompletedProcess:
+def run_remote(
+    server: str,
+    remote_cmd: List[str],
+    *,
+    input_text: Optional[str] = None,
+    dry_run: bool = False,
+) -> subprocess.CompletedProcess:
+    """Run a remote command via SSH, optionally as a dry-run (no execution)."""
     cmd = ssh_base(server) + remote_cmd
     LOG.info("SSH: %s", _cmd_str(cmd))
 
     if dry_run:
         LOG.warning("DRY RUN (-n): SSH command will NOT be executed.")
-        if input_text:
-            LOG.info("DRY RUN would send %d bytes on stdin", len(input_text.encode("utf-8")))
-        print(_cmd_str(cmd))
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-
-    return subprocess.run(
-        cmd,
-        input=(input_text if input_text is not None else None),
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-
-    cmd = ssh_base(server) + remote_cmd
-    LOG.info("SSH: %s", _cmd_str(cmd))
-
-    if dry:
-        LOG.warning("DRY RUN enabled via SHARE_DIR_REMOTE_DRY_RUN=1 — command will NOT be executed.")
         if input_text:
             LOG.info("DRY RUN would send %d bytes on stdin", len(input_text.encode("utf-8")))
         print(_cmd_str(cmd))
@@ -331,7 +320,14 @@ def remote_check_ok(cp: subprocess.CompletedProcess, what: str) -> None:
 # ----------------------------
 
 
-def remote_getfacl(server: str, server_path: str, recurse: bool, depth1: bool) -> str:
+def remote_getfacl(
+    server: str,
+    server_path: str,
+    recurse: bool,
+    depth1: bool,
+    *,
+    dry_run: bool,
+) -> str:
     # Use absolute names so --restore is unambiguous on the server.
     cmd = ["getfacl", "--absolute-names", "-p"]
     if recurse:
@@ -348,7 +344,7 @@ def remote_getfacl(server: str, server_path: str, recurse: bool, depth1: bool) -
     return cp.stdout
 
 
-def remote_getfacl_depth1(server: str, server_path: str) -> str:
+def remote_getfacl_depth1(server: str, server_path: str, *, dry_run: bool) -> str:
     # Capture PATH and direct children (maxdepth=1)
     # Using find -print0 and xargs -0 to handle special characters.
     sh = (
@@ -362,7 +358,7 @@ def remote_getfacl_depth1(server: str, server_path: str) -> str:
     return cp.stdout
 
 
-def remote_setfacl_restore(server: str, restore_text: str) -> None:
+def remote_setfacl_restore(server: str, restore_text: str, *, dry_run: bool) -> None:
     # setfacl expects a restore file; we create a temp file on the server.
     # We do not assume scp is available; we stream via ssh stdin.
     tmp = f"/tmp/share-dir-restore.{os.getpid()}.{int(dt.datetime.now().timestamp())}"
@@ -421,7 +417,7 @@ def remote_apply_traverse_parents(server: str, server_path: str, subject: Subjec
         cmd = ["setfacl", "-m", spec, str(d)]
         if dry_run:
             LOG.info("[dry-run] would set traverse on %s", d)
-            run_remote(server, cmd, dry_run=dry_run)  # prints cmd if env dry-run enabled
+            run_remote(server, cmd, dry_run=dry_run)  # prints cmd in dry-run mode
         else:
             cp = run_remote(server, cmd, dry_run=dry_run)
             remote_check_ok(cp, "setfacl -m (traverse)")
@@ -458,8 +454,7 @@ def remote_apply_share(server: str, server_path: str, subject: Subject, action: 
         f"  find \"$p\" -mindepth 1 -maxdepth 1 -type d -print0 | xargs -0 setfacl -d -m {shlex.quote(spec_dir)}; "
         f"  find \"$p\" -mindepth 1 -maxdepth 1 -type f -print0 | xargs -0 setfacl -m {shlex.quote(spec_file)}; "
         f"else "
-        f"  # PATH is a file"
-        ":; "
+        f"  :; "
         f"fi"
     )
     cp = run_remote(server, ["sh", "-lc", sh], dry_run=dry_run)
@@ -518,14 +513,6 @@ def configure_logging(verbose: int) -> None:
         level = logging.INFO
     logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(message)s")
 
-    level = logging.WARNING
-    if verbose >= 2:
-        level = logging.DEBUG
-    elif verbose == 1:
-        level = logging.INFO
-
-    logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(message)s")
-
 
 def action_list(no_header: bool) -> None:
     lf = log_file()
@@ -560,7 +547,7 @@ def action_show(local_path: Path) -> None:
 
     server, _, _, server_path = find_nfs_mount_info(local_path)
     # show ACL only for the specific object
-    txt = remote_getfacl(server, str(server_path), recurse=False, depth1=False)
+    txt = remote_getfacl(server, str(server_path), recurse=False, depth1=False, dry_run=False)
     print(txt, end="" if txt.endswith("\n") else "\n")
 
     rec = find_last_record_for_path(local_path)
@@ -585,9 +572,9 @@ def action_read_or_readwrite(local_path: Path, subjects: List[Subject], action: 
 
     # Capture restore payload once per operation (covers PATH and affected subtree)
     if recurse:
-        restore_text = remote_getfacl(server, str(server_path), recurse=True, depth1=False)
+        restore_text = remote_getfacl(server, str(server_path), recurse=True, depth1=False, dry_run=dry_run)
     else:
-        restore_text = remote_getfacl_depth1(server, str(server_path))
+        restore_text = remote_getfacl_depth1(server, str(server_path), dry_run=dry_run)
 
     # Apply per-subject
     for subject in subjects:
@@ -637,7 +624,7 @@ def action_undo(local_path: Path, parents: bool, dry_run: bool) -> None:
         )
 
     # Restore previous ACL state
-    remote_setfacl_restore(rec.server, rec.restore_text)
+    remote_setfacl_restore(rec.server, rec.restore_text, dry_run=dry_run)
 
     # Optionally remove traverse entry from parent directories
     if parents:
