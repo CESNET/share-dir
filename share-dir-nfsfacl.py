@@ -194,7 +194,7 @@ def apply_traverse_x(
 
     remote_cmd = " && ".join(cmds)
     if dry_run:
-        log.info(f"[dry-run] ssh {server} {remote_cmd}", file=sys.stderr)
+        log.info(f"[dry-run] ssh {server} {remote_cmd}")
         return
 
     r = run_ssh(server, remote_cmd, verbose=verbose)
@@ -291,7 +291,7 @@ def main() -> int:
     mounts = parse_proc_mounts()
     mount = find_nfs_mount_for_path(args.path, mounts)
     if not mount:
-        print("ERROR: PATH is not on an NFS mount", file=sys.stderr)
+        log.error("ERROR: PATH is not on an NFS mount")
         return 2
 
     remote_path = local_to_remote_path(args.path, mount)
@@ -325,7 +325,7 @@ def main() -> int:
         remote_cmd = " && ".join(cmds)
 
         if args.dry_run:
-            log.info(f"[dry-run] ssh {mount.server} {remote_cmd}", file=sys.stderr)
+            log.info(f"[dry-run] ssh {mount.server} {remote_cmd}")
         else:
             r = run_ssh(mount.server, remote_cmd)
             sys.stdout.write(r.stdout)
@@ -358,7 +358,7 @@ def main() -> int:
         remote_cmd = " && ".join(cmds)
 
         if args.dry_run:
-            log.info(f"[dry-run] ssh {mount.server} {remote_cmd}", file=sys.stderr)
+            log.info(f"[dry-run] ssh {mount.server} {remote_cmd}")
         else:
             r = run_ssh(mount.server, remote_cmd)
             sys.stdout.write(r.stdout)
