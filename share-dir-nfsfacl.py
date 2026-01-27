@@ -26,6 +26,10 @@ from typing import Optional, Tuple, List
 
 LOG_PATH = Path.home() / ".shared_dirs"
 
+# Allowed roots for sharing (colon paths)
+# Example: "$HOME:/storage:/scratch"
+SHARE_DIR_ALLOWED_ROOTS = os.environ.get("SHARE_DIR_ALLOWED_ROOTS", f"{Path.home()}:/storage:/scratch")
+
 # Unified module logger
 log = logging.getLogger("share-dir")
 
@@ -265,6 +269,29 @@ def build_remove_acl_cmds(
     return cmds
 
 
+def is_path_allowed(path: Path) -> bool:
+    """
+    Check whether the given path is under one of the allowed roots.
+
+    Special case:
+    - If allowed root is $HOME, user may only operate *below* $HOME (not on $HOME itself).
+    """
+    p = path.resolve()
+    log.debug(f"checking is_path_allowed: {p} in {SHARE_DIR_ALLOWED_ROOTS}")
+    for root in SHARE_DIR_ALLOWED_ROOTS.split(":"):
+        try:
+            p.relative_to(root)
+        except ValueError:
+            continue
+
+        # Disallow operating directly on the root itself (e.g. /home or /home/user)
+        if p == root:
+            return False
+
+        return True
+    return False
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description="Manage sharing ACLs on NFS via getfacl/setfacl over SSH"
@@ -288,6 +315,12 @@ def main() -> int:
 
     if not args.path:
         ap.error("PATH is required")
+
+    # Validate allowed roots
+    p = Path(args.path).expanduser().resolve()
+    if not is_path_allowed(p):
+        log.error(f"Path '{p}' is not allowed. Allowed roots: {SHARE_DIR_ALLOWED_ROOTS}")
+        return 3
 
     mounts = parse_proc_mounts()
     mount = find_nfs_mount_for_path(args.path, mounts)
