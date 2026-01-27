@@ -127,9 +127,9 @@ def resolve_subject(name: str) -> Tuple[str, str]:
 
 def acl_perm_for_action(action: str) -> str:
     if action == "read":
-        return "r-x"
+        return "r-X"
     if action == "readwrite":
-        return "rwx"
+        return "rwX"
     raise ValueError(f"Unsupported action: {action}")
 
 
@@ -278,69 +278,6 @@ def _chunk_by_argv_limit(items: List[str], base_len: int, max_len: int = 7000) -
     return chunks
 
 
-def collect_local_targets(path: Path, recurse: bool) -> Tuple[List[Path], List[Path]]:
-    """Return (all_targets, dir_targets) for ACL changes.
-
-    Rules:
-    - If PATH is a file: all_targets=[PATH], dir_targets=[]
-    - If PATH is a directory:
-      - apply ACL to PATH and its contents
-      - without -r: only immediate children
-      - with -r: walk recursively
-    - dir_targets contains directories that should receive *default* ACL.
-
-    This is evaluated locally on the FE so the remote side can be a pure setfacl invocation
-    (no shell operators like 'if', '&&', pipes), which is compatible with jailkit.
-    """
-    p = path.expanduser().resolve()
-
-    if p.is_dir():
-        all_targets: List[Path] = [p]
-        dir_targets: List[Path] = [p]
-
-        if recurse:
-            for root, dirs, files in os.walk(p):
-                root_p = Path(root)
-                for d in dirs:
-                    dp = root_p / d
-                    all_targets.append(dp)
-                    dir_targets.append(dp)
-                for f in files:
-                    all_targets.append(root_p / f)
-        else:
-            try:
-                for child in p.iterdir():
-                    all_targets.append(child)
-                    if child.is_dir():
-                        dir_targets.append(child)
-            except PermissionError:
-                pass
-
-        # De-dup while preserving order
-        seen = set()
-        all_u: List[Path] = []
-        for t in all_targets:
-            s = str(t)
-            if s in seen:
-                continue
-            seen.add(s)
-            all_u.append(t)
-
-        seen = set()
-        dir_u: List[Path] = []
-        for t in dir_targets:
-            s = str(t)
-            if s in seen:
-                continue
-            seen.add(s)
-            dir_u.append(t)
-
-        return all_u, dir_u
-
-    # File / special path
-    return [p], []
-
-
 def build_setfacl_commands(
     action: str,
     subject_type: str,
@@ -385,76 +322,6 @@ def build_remove_acl_commands(
         base_d = f"setfacl -x d:{stype}:{shlex.quote(subject)}"
         for ch in _chunk_by_argv_limit(remote_dir_targets, base_len=len(base_d)):
             cmds.append(base_d + " " + " ".join(ch))
-
-    return cmds
-
-
-def build_setfacl_cmds(
-    action: str,
-    remote_path: str,
-    subject_type: str,
-    subject: str,
-    recurse: bool,
-    is_dir: bool,
-) -> List[str]:
-    """
-    Build pure setfacl commands WITHOUT shell logic.
-    All checks (directory existence etc.) must be done locally beforehand.
-    """
-    perms = acl_perm_for_action(action)
-    stype = "u" if subject_type == "user" else "g"
-
-    cmds: List[str] = []
-
-    # Access ACL on root path
-    cmds.append(
-        f"setfacl -m {stype}:{shlex.quote(subject)}:{perms} {shlex.quote(remote_path)}"
-    )
-
-    # Default ACL only if PATH is a directory
-    if is_dir:
-        cmds.append(
-            f"setfacl -m d:{stype}:{shlex.quote(subject)}:{perms} {shlex.quote(remote_path)}"
-        )
-
-    if recurse:
-        cmds.append(
-            f"setfacl -R -m {stype}:{shlex.quote(subject)}:{perms} {shlex.quote(remote_path)}"
-        )
-        if is_dir:
-            cmds.append(
-                f"setfacl -R -m d:{stype}:{shlex.quote(subject)}:{perms} {shlex.quote(remote_path)}"
-            )
-
-    return cmds
-
-
-def build_remove_acl_cmds(
-    remote_path: str,
-    subject_type: str,
-    subject: str,
-    recurse: bool,
-) -> List[str]:
-    stype = "u" if subject_type == "user" else "g"
-
-    cmds = []
-
-    cmds.append(f"setfacl -x {stype}:{shlex.quote(subject)} {shlex.quote(remote_path)} || true")
-    cmds.append(
-        f"if [ -d {shlex.quote(remote_path)} ]; then "
-        f"setfacl -x d:{stype}:{shlex.quote(subject)} {shlex.quote(remote_path)} || true; fi"
-    )
-
-    if recurse:
-        cmds.append(
-            f"if [ -d {shlex.quote(remote_path)} ]; then "
-            f"setfacl -R -x {stype}:{shlex.quote(subject)} {shlex.quote(remote_path)} || true; fi"
-        )
-        cmds.append(
-            f"if [ -d {shlex.quote(remote_path)} ]; then "
-            f"find {shlex.quote(remote_path)} -type d -print0 | "
-            f"xargs -0 -r setfacl -x d:{stype}:{shlex.quote(subject)} || true; fi"
-        )
 
     return cmds
 
