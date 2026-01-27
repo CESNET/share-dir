@@ -279,7 +279,8 @@ def main() -> int:
     ap.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
     args = ap.parse_args()
 
-    log.setLevel(logging.DEBUG if args.verbose else logging.INFO)
+    level = logging.DEBUG if args.verbose else logging.INFO
+    logging.basicConfig(level=level)
 
     if args.action == "list":
         return cmd_list()
