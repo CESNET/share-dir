@@ -212,16 +212,16 @@ def apply_traverse_x(
     # Sort from shallow to deep so traversal is granted in a sensible order.
     dirs = sorted(set(dirs), key=lambda p: len(str(p)))
 
-    cmds = [
-        f"setfacl -m {stype}:{shlex.quote(subject)}:--x {shlex.quote(str(d))}"
-        for d in dirs
-        if str(d) != "/"
-    ]
+    paths = [shlex.quote(str(d)) for d in dirs if str(d) != "/"]
 
-    if not cmds:
+    if not paths:
         return
 
-    remote_cmd = " && ".join(cmds)
+    # Apply the same ACL modification to all parent directories in a single call
+    remote_cmd = (
+        f"setfacl -m {stype}:{shlex.quote(subject)}:--x "
+        + " ".join(paths)
+    )
     if dry_run:
         log.info(f"[dry-run] ssh {server} {remote_cmd}")
         return
