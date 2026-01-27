@@ -13,7 +13,6 @@ Key idea:
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import datetime as dt
 import json
 import os
@@ -170,7 +169,6 @@ def apply_traverse_x(
     export_root: str,
     subject_type: str,
     subject: str,
-    verbose: bool,
     dry_run: bool,
 ) -> None:
     """
@@ -197,7 +195,7 @@ def apply_traverse_x(
         log.info(f"[dry-run] ssh {server} {remote_cmd}")
         return
 
-    r = run_ssh(server, remote_cmd, verbose=verbose)
+    r = run_ssh(server, remote_cmd)
     if r.returncode != 0:
         raise RuntimeError(r.stderr.strip())
 
@@ -280,7 +278,10 @@ def main() -> int:
     args = ap.parse_args()
 
     level = logging.DEBUG if args.verbose else logging.INFO
-    logging.basicConfig(level=level)
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
 
     if args.action == "list":
         return cmd_list()
@@ -311,7 +312,6 @@ def main() -> int:
             mount.export,
             subject_type,
             subject,
-            args.verbose,
             args.dry_run,
         )
 
