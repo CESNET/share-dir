@@ -28,7 +28,7 @@ LOG_PATH = Path.home() / ".shared_dirs"
 
 # Allowed roots for sharing (colon paths)
 # Example: "$HOME:/storage:/scratch"
-SHARE_DIR_ALLOWED_ROOTS = os.environ.get("SHARE_DIR_ALLOWED_ROOTS", f"{Path.home().expanduser().absolute()}:/storage:/scratch")
+SHARE_DIR_ALLOWED_ROOTS = os.environ.get("SHARE_DIR_ALLOWED_ROOTS", f"{Path.home().expanduser().absolute().resolve()}:/storage:/scratch")
 
 # Unified module logger
 log = logging.getLogger("share-dir")
