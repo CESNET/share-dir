@@ -28,7 +28,10 @@ LOG_PATH = Path.home() / ".shared_dirs"
 
 # Allowed roots for sharing (colon paths)
 # Example: "$HOME:/storage:/scratch"
-SHARE_DIR_ALLOWED_ROOTS = os.environ.get("SHARE_DIR_ALLOWED_ROOTS", f"{Path.home().expanduser().absolute().resolve()}:/storage:/scratch")
+SHARE_DIR_ALLOWED_ROOTS = os.environ.get(
+    "SHARE_DIR_ALLOWED_ROOTS",
+    f"{Path.home().resolve()}:/storage:/scratch"
+)
 
 # Unified module logger
 log = logging.getLogger("share-dir")
@@ -170,26 +173,50 @@ def cmd_list() -> int:
 def apply_traverse_x(
     server: str,
     remote_target: str,
-    export_root: str,
+    stop_root: str,
     subject_type: str,
     subject: str,
     dry_run: bool,
 ) -> None:
-    """
-    Ensure subject can traverse parent directories up to the target.
-    Uses '--x' only (minimal traversal).
+    """Ensure subject can traverse parent directories from `stop_root` down to `remote_target`.
+
+    We intentionally stop at the configured allowed root (mapped to a remote path), not at the NFS export
+    mountpoint. This prevents the tool from touching broader directory levels than intended.
+
+    We use '--x' only (minimal traversal).
     """
     stype = "u" if subject_type == "user" else "g"
 
     target = Path(remote_target)
-    export = Path(export_root)
+    boundary = Path(stop_root)
 
-    parents = [p for p in target.parents if str(p).startswith(str(export))]
-    parents = sorted(parents, key=lambda p: len(str(p)))
+    # Collect directories we will touch: boundary + parents under boundary.
+    dirs: List[Path] = []
 
-    cmds = []
-    for d in parents:
-        cmds.append(f"setfacl -m {stype}:{shlex.quote(subject)}:--x {shlex.quote(str(d))}")
+    # Add boundary itself if it is an ancestor (or equals target).
+    try:
+        target.relative_to(boundary)
+        dirs.append(boundary)
+    except ValueError:
+        # If the boundary is not an ancestor, do nothing (shouldn't happen if local checks are correct).
+        log.warning("stop_root '%s' is not an ancestor of '%s'", boundary, target)
+        return
+
+    for p in target.parents:
+        try:
+            p.relative_to(boundary)
+        except ValueError:
+            continue
+        dirs.append(p)
+
+    # Sort from shallow to deep so traversal is granted in a sensible order.
+    dirs = sorted(set(dirs), key=lambda p: len(str(p)))
+
+    cmds = [
+        f"setfacl -m {stype}:{shlex.quote(subject)}:--x {shlex.quote(str(d))}"
+        for d in dirs
+        if str(d) != "/"
+    ]
 
     if not cmds:
         return
@@ -202,6 +229,31 @@ def apply_traverse_x(
     r = run_ssh(server, remote_cmd)
     if r.returncode != 0:
         raise RuntimeError(r.stderr.strip())
+
+
+def _allowed_roots_paths() -> List[Path]:
+    """Parse SHARE_DIR_ALLOWED_ROOTS into resolved Path objects."""
+    roots: List[Path] = []
+    for raw in SHARE_DIR_ALLOWED_ROOTS.split(":"):
+        raw = raw.strip()
+        if not raw:
+            continue
+        roots.append(Path(raw).expanduser().resolve())
+    # Prefer the longest match
+    roots.sort(key=lambda p: len(str(p)), reverse=True)
+    return roots
+
+
+def find_allowed_root_for_path(path: Path) -> Optional[Path]:
+    """Return the deepest allowed root that contains `path` (both resolved)."""
+    p = path.expanduser().resolve()
+    for root in _allowed_roots_paths():
+        try:
+            p.relative_to(root)
+            return root
+        except ValueError:
+            continue
+    return None
 
 
 def build_setfacl_cmds(
@@ -339,10 +391,18 @@ def main() -> int:
     subject_type, subject = resolve_subject(args.subject)
 
     if args.action in ("read", "readwrite"):
+        # Determine which allowed root matched the local PATH, map it to the remote filesystem,
+        # and use it as the boundary for parent-directory traverse ACLs.
+        local_allowed_root = find_allowed_root_for_path(Path(args.path))
+        if not local_allowed_root:
+            log.error("Internal error: could not determine matching allowed root for '%s'", args.path)
+            return 3
+        remote_allowed_root = local_to_remote_path(str(local_allowed_root), mount)
+
         apply_traverse_x(
             mount.server,
             remote_path,
-            mount.export,
+            remote_allowed_root,
             subject_type,
             subject,
             args.dry_run,
