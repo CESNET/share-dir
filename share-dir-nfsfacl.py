@@ -256,37 +256,175 @@ def find_allowed_root_for_path(path: Path) -> Optional[Path]:
     return None
 
 
+def _chunk_by_argv_limit(items: List[str], base_len: int, max_len: int = 7000) -> List[List[str]]:
+    """Chunk a list of already-escaped items so each command stays under a rough length limit."""
+    chunks: List[List[str]] = []
+    cur: List[str] = []
+    cur_len = base_len
+
+    for it in items:
+        add_len = len(it) + 1
+        if cur and (cur_len + add_len) > max_len:
+            chunks.append(cur)
+            cur = [it]
+            cur_len = base_len + len(it)
+        else:
+            cur.append(it)
+            cur_len += add_len
+
+    if cur:
+        chunks.append(cur)
+
+    return chunks
+
+
+def collect_local_targets(path: Path, recurse: bool) -> Tuple[List[Path], List[Path]]:
+    """Return (all_targets, dir_targets) for ACL changes.
+
+    Rules:
+    - If PATH is a file: all_targets=[PATH], dir_targets=[]
+    - If PATH is a directory:
+      - apply ACL to PATH and its contents
+      - without -r: only immediate children
+      - with -r: walk recursively
+    - dir_targets contains directories that should receive *default* ACL.
+
+    This is evaluated locally on the FE so the remote side can be a pure setfacl invocation
+    (no shell operators like 'if', '&&', pipes), which is compatible with jailkit.
+    """
+    p = path.expanduser().resolve()
+
+    if p.is_dir():
+        all_targets: List[Path] = [p]
+        dir_targets: List[Path] = [p]
+
+        if recurse:
+            for root, dirs, files in os.walk(p):
+                root_p = Path(root)
+                for d in dirs:
+                    dp = root_p / d
+                    all_targets.append(dp)
+                    dir_targets.append(dp)
+                for f in files:
+                    all_targets.append(root_p / f)
+        else:
+            try:
+                for child in p.iterdir():
+                    all_targets.append(child)
+                    if child.is_dir():
+                        dir_targets.append(child)
+            except PermissionError:
+                pass
+
+        # De-dup while preserving order
+        seen = set()
+        all_u: List[Path] = []
+        for t in all_targets:
+            s = str(t)
+            if s in seen:
+                continue
+            seen.add(s)
+            all_u.append(t)
+
+        seen = set()
+        dir_u: List[Path] = []
+        for t in dir_targets:
+            s = str(t)
+            if s in seen:
+                continue
+            seen.add(s)
+            dir_u.append(t)
+
+        return all_u, dir_u
+
+    # File / special path
+    return [p], []
+
+
+def build_setfacl_commands(
+    action: str,
+    subject_type: str,
+    subject: str,
+    remote_targets: List[str],
+    remote_dir_targets: List[str],
+) -> List[str]:
+    """Build remote *single-command* invocations (no shell operators)."""
+    perms = acl_perm_for_action(action)
+    stype = "u" if subject_type == "user" else "g"
+
+    cmds: List[str] = []
+
+    base = f"setfacl -m {stype}:{shlex.quote(subject)}:{perms}"
+    for ch in _chunk_by_argv_limit(remote_targets, base_len=len(base)):
+        cmds.append(base + " " + " ".join(ch))
+
+    if remote_dir_targets:
+        base_d = f"setfacl -m d:{stype}:{shlex.quote(subject)}:{perms}"
+        for ch in _chunk_by_argv_limit(remote_dir_targets, base_len=len(base_d)):
+            cmds.append(base_d + " " + " ".join(ch))
+
+    return cmds
+
+
+def build_remove_acl_commands(
+    subject_type: str,
+    subject: str,
+    remote_targets: List[str],
+    remote_dir_targets: List[str],
+) -> List[str]:
+    """Build remote *single-command* invocations for undo (no shell operators)."""
+    stype = "u" if subject_type == "user" else "g"
+
+    cmds: List[str] = []
+
+    base = f"setfacl -x {stype}:{shlex.quote(subject)}"
+    for ch in _chunk_by_argv_limit(remote_targets, base_len=len(base)):
+        cmds.append(base + " " + " ".join(ch))
+
+    if remote_dir_targets:
+        base_d = f"setfacl -x d:{stype}:{shlex.quote(subject)}"
+        for ch in _chunk_by_argv_limit(remote_dir_targets, base_len=len(base_d)):
+            cmds.append(base_d + " " + " ".join(ch))
+
+    return cmds
+
+
 def build_setfacl_cmds(
     action: str,
     remote_path: str,
     subject_type: str,
     subject: str,
     recurse: bool,
+    is_dir: bool,
 ) -> List[str]:
+    """
+    Build pure setfacl commands WITHOUT shell logic.
+    All checks (directory existence etc.) must be done locally beforehand.
+    """
     perms = acl_perm_for_action(action)
     stype = "u" if subject_type == "user" else "g"
 
-    cmds = []
+    cmds: List[str] = []
 
-    # Access ACL on root
-    cmds.append(f"setfacl -m {stype}:{shlex.quote(subject)}:{perms} {shlex.quote(remote_path)}")
-
-    # Default ACL on directory
+    # Access ACL on root path
     cmds.append(
-        f"if [ -d {shlex.quote(remote_path)} ]; then "
-        f"setfacl -m d:{stype}:{shlex.quote(subject)}:{perms} {shlex.quote(remote_path)}; fi"
+        f"setfacl -m {stype}:{shlex.quote(subject)}:{perms} {shlex.quote(remote_path)}"
     )
+
+    # Default ACL only if PATH is a directory
+    if is_dir:
+        cmds.append(
+            f"setfacl -m d:{stype}:{shlex.quote(subject)}:{perms} {shlex.quote(remote_path)}"
+        )
 
     if recurse:
         cmds.append(
-            f"if [ -d {shlex.quote(remote_path)} ]; then "
-            f"setfacl -R -m {stype}:{shlex.quote(subject)}:{perms} {shlex.quote(remote_path)}; fi"
+            f"setfacl -R -m {stype}:{shlex.quote(subject)}:{perms} {shlex.quote(remote_path)}"
         )
-        cmds.append(
-            f"if [ -d {shlex.quote(remote_path)} ]; then "
-            f"find {shlex.quote(remote_path)} -type d -print0 | "
-            f"xargs -0 -r setfacl -m d:{stype}:{shlex.quote(subject)}:{perms}; fi"
-        )
+        if is_dir:
+            cmds.append(
+                f"setfacl -R -m d:{stype}:{shlex.quote(subject)}:{perms} {shlex.quote(remote_path)}"
+            )
 
     return cmds
 
@@ -408,18 +546,29 @@ def main() -> int:
             args.dry_run,
         )
 
-        cmds = build_setfacl_cmds(
+        # Determine locally whether PATH is a directory (no remote shell checks)
+        is_dir = Path(args.path).is_dir()
+
+        # Pre-check PATH locally so remote side can be a pure setfacl invocation (no shell syntax).
+        local_targets, local_dir_targets = collect_local_targets(Path(args.path), args.recurse)
+
+        # Map local targets to remote filesystem paths
+        remote_targets = [shlex.quote(local_to_remote_path(str(p), mount)) for p in local_targets]
+        remote_dir_targets = [shlex.quote(local_to_remote_path(str(p), mount)) for p in local_dir_targets]
+
+        cmds = build_setfacl_commands(
             args.action,
-            remote_path,
             subject_type,
             subject,
-            args.recurse,
+            remote_targets,
+            remote_dir_targets,
         )
-        remote_cmd = " && ".join(cmds)
 
-        if args.dry_run:
-            log.info(f"[dry-run] ssh {mount.server} {remote_cmd}")
-        else:
+        for remote_cmd in cmds:
+            if args.dry_run:
+                log.info(f"[dry-run] ssh {mount.server} {remote_cmd}")
+                continue
+
             r = run_ssh(mount.server, remote_cmd)
             sys.stdout.write(r.stdout)
             sys.stderr.write(r.stderr)
@@ -442,22 +591,30 @@ def main() -> int:
         return 0
 
     if args.action == "undo":
-        cmds = build_remove_acl_cmds(
-            remote_path,
+        # Pre-check PATH locally so remote side can be a pure setfacl invocation (no shell syntax).
+        local_targets, local_dir_targets = collect_local_targets(Path(args.path), args.recurse)
+
+        remote_targets = [shlex.quote(local_to_remote_path(str(p), mount)) for p in local_targets]
+        remote_dir_targets = [shlex.quote(local_to_remote_path(str(p), mount)) for p in local_dir_targets]
+
+        cmds = build_remove_acl_commands(
             subject_type,
             subject,
-            args.recurse,
+            remote_targets,
+            remote_dir_targets,
         )
-        remote_cmd = " && ".join(cmds)
 
-        if args.dry_run:
-            log.info(f"[dry-run] ssh {mount.server} {remote_cmd}")
-        else:
+        for remote_cmd in cmds:
+            if args.dry_run:
+                log.info(f"[dry-run] ssh {mount.server} {remote_cmd}")
+                continue
+
             r = run_ssh(mount.server, remote_cmd)
             sys.stdout.write(r.stdout)
             sys.stderr.write(r.stderr)
             if r.returncode != 0:
-                return r.returncode
+                # Undo should be best-effort; do not fail the whole command on a missing ACL entry.
+                log.warning("undo command failed (ignored): %s", r.stderr.strip())
 
         log_action({
             "ts": dt.datetime.now(dt.timezone.utc).isoformat(),
