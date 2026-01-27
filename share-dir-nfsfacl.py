@@ -28,7 +28,7 @@ LOG_PATH = Path.home() / ".shared_dirs"
 
 # Allowed roots for sharing (colon paths)
 # Example: "$HOME:/storage:/scratch"
-SHARE_DIR_ALLOWED_ROOTS = os.environ.get("SHARE_DIR_ALLOWED_ROOTS", f"{Path.home()}:/storage:/scratch")
+SHARE_DIR_ALLOWED_ROOTS = os.environ.get("SHARE_DIR_ALLOWED_ROOTS", f"{Path.home().expanduser().absolute()}:/storage:/scratch")
 
 # Unified module logger
 log = logging.getLogger("share-dir")
@@ -146,7 +146,7 @@ def cmd_show(server: str, remote_path: str) -> int:
 
 def cmd_list() -> int:
     if not LOG_PATH.exists():
-        log.info("(no log file)")
+        log.info("No log file")
         return 0
 
     with open(LOG_PATH, "r", encoding="utf-8") as f:
