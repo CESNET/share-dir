@@ -20,12 +20,15 @@ import os
 import shlex
 import subprocess
 import sys
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Tuple, List
 
 LOG_PATH = Path.home() / ".shared_dirs"
 
+# Unified module logger
+log = logging.getLogger("share-dir")
 
 @dataclass
 class NfsMount:
@@ -34,19 +37,14 @@ class NfsMount:
     export: str            # remote export path, e.g. "/srv/home"
 
 
-def run_local(cmd: List[str], verbose: bool = False) -> subprocess.CompletedProcess:
-    if verbose:
-        print(f"[local] {shlex.join(cmd)}", file=sys.stderr)
+def run_local(cmd: List[str]) -> subprocess.CompletedProcess:
+    log.debug("[local] %s", shlex.join(cmd))
     return subprocess.run(cmd, text=True, capture_output=True)
 
 
-def run_ssh(host: str, remote_cmd: str, verbose: bool = False) -> subprocess.CompletedProcess:
-    """
-    Run a command over SSH. remote_cmd is executed by the remote shell.
-    """
+def run_ssh(host: str, remote_cmd: str) -> subprocess.CompletedProcess:
     cmd = ["ssh", "-o", "BatchMode=yes", host, remote_cmd]
-    if verbose:
-        print(f"[ssh:{host}] {shlex.join(cmd)}", file=sys.stderr)
+    log.debug("[ssh:%s] %s", host, shlex.join(cmd))
     return subprocess.run(cmd, text=True, capture_output=True)
 
 
@@ -98,7 +96,7 @@ def local_to_remote_path(local_path: str, mount: NfsMount) -> str:
     return os.path.normpath(os.path.join(mount.export, rel))
 
 
-def resolve_subject(name: str, verbose: bool = False) -> Tuple[str, str]:
+def resolve_subject(name: str) -> Tuple[str, str]:
     """
     Decide whether name is a user or a group.
 
@@ -110,11 +108,11 @@ def resolve_subject(name: str, verbose: bool = False) -> Tuple[str, str]:
     if name.startswith("@"):  # force group
         return "group", name[1:]
 
-    r = run_local(["getent", "passwd", name], verbose=verbose)
+    r = run_local(["getent", "passwd", name])
     if r.returncode == 0 and r.stdout.strip():
         return "user", name
 
-    r = run_local(["getent", "group", name], verbose=verbose)
+    r = run_local(["getent", "group", name])
     if r.returncode == 0 and r.stdout.strip():
         return "group", name
 
@@ -135,8 +133,8 @@ def log_action(record: dict) -> None:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-def cmd_show(server: str, remote_path: str, verbose: bool) -> int:
-    r = run_ssh(server, f"getfacl -p {shlex.quote(remote_path)}", verbose=verbose)
+def cmd_show(server: str, remote_path: str) -> int:
+    r = run_ssh(server, f"getfacl -p {shlex.quote(remote_path)}")
     sys.stdout.write(r.stdout)
     if r.stderr:
         sys.stderr.write(r.stderr)
@@ -145,7 +143,7 @@ def cmd_show(server: str, remote_path: str, verbose: bool) -> int:
 
 def cmd_list() -> int:
     if not LOG_PATH.exists():
-        print("(no log file)", file=sys.stderr)
+        log.info("(no log file)")
         return 0
 
     with open(LOG_PATH, "r", encoding="utf-8") as f:
@@ -157,7 +155,7 @@ def cmd_list() -> int:
                 rec = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            print(
+            log.info(
                 f"{rec.get('ts','?')}  {rec.get('action','?'):9}  "
                 f"{rec.get('local_path','?')}  "
                 f"{rec.get('subject_type','?')}:{rec.get('subject','?')}  "
@@ -196,7 +194,7 @@ def apply_traverse_x(
 
     remote_cmd = " && ".join(cmds)
     if dry_run:
-        print(f"[dry-run] ssh {server} {remote_cmd}", file=sys.stderr)
+        log.info(f"[dry-run] ssh {server} {remote_cmd}", file=sys.stderr)
         return
 
     r = run_ssh(server, remote_cmd, verbose=verbose)
@@ -278,8 +276,10 @@ def main() -> int:
     ap.add_argument("subject", nargs="?", help="LOGIN or GROUP (use @group to force group)")
     ap.add_argument("-r", "--recurse", action="store_true")
     ap.add_argument("-n", "--dry-run", action="store_true")
-    ap.add_argument("-v", "--verbose", action="store_true")
+    ap.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
     args = ap.parse_args()
+
+    log.setLevel(logging.DEBUG if args.verbose else logging.INFO)
 
     if args.action == "list":
         return cmd_list()
@@ -296,12 +296,12 @@ def main() -> int:
     remote_path = local_to_remote_path(args.path, mount)
 
     if args.action == "show":
-        return cmd_show(mount.server, remote_path, args.verbose)
+        return cmd_show(mount.server, remote_path)
 
     if args.action in ("read", "readwrite", "undo") and not args.subject:
         ap.error("LOGIN|GROUP is required")
 
-    subject_type, subject = resolve_subject(args.subject, args.verbose)
+    subject_type, subject = resolve_subject(args.subject)
 
     if args.action in ("read", "readwrite"):
         apply_traverse_x(
@@ -324,9 +324,9 @@ def main() -> int:
         remote_cmd = " && ".join(cmds)
 
         if args.dry_run:
-            print(f"[dry-run] ssh {mount.server} {remote_cmd}", file=sys.stderr)
+            log.info(f"[dry-run] ssh {mount.server} {remote_cmd}", file=sys.stderr)
         else:
-            r = run_ssh(mount.server, remote_cmd, args.verbose)
+            r = run_ssh(mount.server, remote_cmd)
             sys.stdout.write(r.stdout)
             sys.stderr.write(r.stderr)
             if r.returncode != 0:
@@ -357,9 +357,9 @@ def main() -> int:
         remote_cmd = " && ".join(cmds)
 
         if args.dry_run:
-            print(f"[dry-run] ssh {mount.server} {remote_cmd}", file=sys.stderr)
+            log.info(f"[dry-run] ssh {mount.server} {remote_cmd}", file=sys.stderr)
         else:
-            r = run_ssh(mount.server, remote_cmd, args.verbose)
+            r = run_ssh(mount.server, remote_cmd)
             sys.stdout.write(r.stdout)
             sys.stderr.write(r.stderr)
             if r.returncode != 0:
