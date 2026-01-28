@@ -231,6 +231,58 @@ def apply_traverse_x(
         raise RuntimeError(r.stderr.strip())
 
 
+def remove_parent_acl_entry(
+    server: str,
+    remote_target: str,
+    stop_root: str,
+    subject_type: str,
+    subject: str,
+    dry_run: bool,
+) -> None:
+    """Remove the subject ACL entry from parent directories up to `stop_root`.
+
+    WARNING: This may break other sharing setups, because it removes the *entire* ACL entry
+    (e.g., u:alice or g:team) on those parent directories, not only the '--x' bit.
+    """
+    stype = "u" if subject_type == "user" else "g"
+
+    target = Path(remote_target)
+    boundary = Path(stop_root)
+
+    dirs: List[Path] = []
+
+    try:
+        target.relative_to(boundary)
+        dirs.append(boundary)
+    except ValueError:
+        log.warning("stop_root '%s' is not an ancestor of '%s'", boundary, target)
+        return
+
+    for p in target.parents:
+        try:
+            p.relative_to(boundary)
+        except ValueError:
+            continue
+        dirs.append(p)
+
+    dirs = sorted(set(dirs), key=lambda p: len(str(p)))
+    paths = [shlex.quote(str(d)) for d in dirs if str(d) != "/"]
+
+    if not paths:
+        return
+
+    remote_cmd = f"setfacl -x {stype}:{shlex.quote(subject)} " + " ".join(paths)
+
+    if dry_run:
+        log.info(f"[dry-run] ssh {server} {remote_cmd}")
+        return
+
+    r = run_ssh(server, remote_cmd)
+    if r.returncode != 0:
+        # Best-effort: missing entries are okay.
+        log.warning("parent ACL cleanup failed (ignored): %s", r.stderr.strip())
+
+
 def _allowed_roots_paths() -> List[Path]:
     """Parse SHARE_DIR_ALLOWED_ROOTS into resolved Path objects."""
     roots: List[Path] = []
@@ -422,6 +474,7 @@ def main() -> int:
     ap.add_argument("-r", "--recurse", action="store_true")
     ap.add_argument("-n", "--dry-run", action="store_true")
     ap.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
+    ap.add_argument("-p", "--parent", action="store_true", help="For undo: also remove ACLs from parent directories (DANGEROUS)")
     args = ap.parse_args()
 
     level = logging.DEBUG if args.verbose else logging.INFO
@@ -482,6 +535,16 @@ def main() -> int:
         # Pre-check PATH locally so remote side can be a pure setfacl invocation (no shell syntax).
         local_targets, local_dir_targets = collect_local_targets(Path(args.path), args.recurse)
 
+        if args.parent:
+            # Also include parent directories up to the allowed root
+            local_allowed_root = find_allowed_root_for_path(Path(args.path))
+            if local_allowed_root:
+                p_cur = Path(args.path).expanduser().resolve().parent
+                while p_cur != local_allowed_root and p_cur not in local_targets:
+                    local_targets.append(p_cur)
+                    local_dir_targets.append(p_cur)
+                    p_cur = p_cur.parent
+
         # Map local targets to remote filesystem paths
         remote_targets = [shlex.quote(local_to_remote_path(str(p), mount)) for p in local_targets]
         remote_dir_targets = [shlex.quote(local_to_remote_path(str(p), mount)) for p in local_dir_targets]
@@ -521,6 +584,12 @@ def main() -> int:
         return 0
 
     if args.action == "undo":
+        if args.parent:
+            log.warning(
+                "You used --parent: this will remove ACL entries on parent directories too. "
+                "This may break other sharing configurations that rely on the same user/group entry."
+            )
+
         # Pre-check PATH locally so remote side can be a pure setfacl invocation (no shell syntax).
         local_targets, local_dir_targets = collect_local_targets(Path(args.path), args.recurse)
 
@@ -545,6 +614,21 @@ def main() -> int:
             if r.returncode != 0:
                 # Undo should be best-effort; do not fail the whole command on a missing ACL entry.
                 log.warning("undo command failed (ignored): %s", r.stderr.strip())
+
+        if args.parent:
+            local_allowed_root = find_allowed_root_for_path(Path(args.path))
+            if not local_allowed_root:
+                log.error("Internal error: could not determine matching allowed root for '%s'", args.path)
+                return 3
+            remote_allowed_root = local_to_remote_path(str(local_allowed_root), mount)
+            remove_parent_acl_entry(
+                mount.server,
+                remote_path,
+                remote_allowed_root,
+                subject_type,
+                subject,
+                args.dry_run,
+            )
 
         log_action({
             "ts": dt.datetime.now(dt.timezone.utc).isoformat(),
