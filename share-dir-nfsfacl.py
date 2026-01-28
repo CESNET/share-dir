@@ -464,6 +464,132 @@ def is_path_allowed(path: Path) -> bool:
     return False
 
 
+def handle_read_readwrite(args, mount: NfsMount) -> int:
+    # Determine which allowed root matched the local PATH, map it to the remote filesystem,
+    # and use it as the boundary for parent-directory traverse ACLs.
+    local_allowed_root = find_allowed_root_for_path(Path(args.path))
+    if not local_allowed_root:
+        log.error("Internal error: could not determine matching allowed root for '%s'", args.path)
+        return 3
+    remote_allowed_root = local_to_remote_path(str(local_allowed_root), mount)
+
+    remote_path = local_to_remote_path(args.path, mount)
+
+    apply_traverse_x(
+        mount.server,
+        remote_path,
+        remote_allowed_root,
+        resolve_subject(args.subject)[0],
+        resolve_subject(args.subject)[1],
+        args.dry_run,
+    )
+
+    # Pre-check PATH locally so remote side can be a pure setfacl invocation (no shell syntax).
+    local_targets, local_dir_targets = collect_local_targets(Path(args.path), args.recurse)
+
+    # Map local targets to remote filesystem paths
+    remote_targets = [shlex.quote(local_to_remote_path(str(p), mount)) for p in local_targets]
+    remote_dir_targets = [shlex.quote(local_to_remote_path(str(p), mount)) for p in local_dir_targets]
+
+    subject_type, subject = resolve_subject(args.subject)
+
+    cmds = build_setfacl_commands(
+        args.action,
+        subject_type,
+        subject,
+        remote_targets,
+        remote_dir_targets,
+    )
+
+    for remote_cmd in cmds:
+        if args.dry_run:
+            log.info(f"[dry-run] ssh {mount.server} {remote_cmd}")
+            continue
+
+        r = run_ssh(mount.server, remote_cmd)
+        sys.stdout.write(r.stdout)
+        sys.stderr.write(r.stderr)
+        if r.returncode != 0:
+            return r.returncode
+
+    log_action({
+        "ts": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "action": args.action,
+        "local_path": os.path.realpath(args.path),
+        "nfs_server": mount.server,
+        "export": mount.export,
+        "remote_path": remote_path,
+        "subject_type": subject_type,
+        "subject": subject,
+        "perms": acl_perm_for_action(args.action),
+        "recurse": bool(args.recurse),
+        "dry_run": bool(args.dry_run),
+    })
+    return 0
+
+
+def handle_undo(args, mount: NfsMount) -> int:
+    if args.parent:
+        log.warning(
+            "You used --parent: this will remove ACL entries on parent directories too. "
+            "This may break other sharing configurations that rely on the same user/group entry."
+        )
+
+    subject_type, subject = resolve_subject(args.subject)
+    remote_path = local_to_remote_path(args.path, mount)
+
+    local_targets, local_dir_targets = collect_local_targets(Path(args.path), args.recurse)
+    remote_targets = [shlex.quote(local_to_remote_path(str(p), mount)) for p in local_targets]
+    remote_dir_targets = [shlex.quote(local_to_remote_path(str(p), mount)) for p in local_dir_targets]
+
+    cmds = build_remove_acl_commands(
+        subject_type,
+        subject,
+        remote_targets,
+        remote_dir_targets,
+    )
+
+    for remote_cmd in cmds:
+        if args.dry_run:
+            log.info(f"[dry-run] ssh {mount.server} {remote_cmd}")
+            continue
+
+        r = run_ssh(mount.server, remote_cmd)
+        sys.stdout.write(r.stdout)
+        sys.stderr.write(r.stderr)
+        if r.returncode != 0:
+            log.warning("undo command failed (ignored): %s", r.stderr.strip())
+
+    if args.parent:
+        local_allowed_root = find_allowed_root_for_path(Path(args.path))
+        if not local_allowed_root:
+            log.error("Internal error: could not determine matching allowed root for '%s'", args.path)
+            return 3
+        remote_allowed_root = local_to_remote_path(str(local_allowed_root), mount)
+        remove_parent_acl_entry(
+            mount.server,
+            remote_path,
+            remote_allowed_root,
+            subject_type,
+            subject,
+            args.dry_run,
+        )
+
+    log_action({
+        "ts": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "action": "undo",
+        "local_path": os.path.realpath(args.path),
+        "nfs_server": mount.server,
+        "export": mount.export,
+        "remote_path": remote_path,
+        "subject_type": subject_type,
+        "subject": subject,
+        "recurse": bool(args.recurse),
+        "dry_run": bool(args.dry_run),
+    })
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description="Manage sharing ACLs on NFS via getfacl/setfacl over SSH"
@@ -489,7 +615,6 @@ def main() -> int:
     if not args.path:
         ap.error("PATH is required")
 
-    # Validate allowed roots
     p = Path(args.path).expanduser().resolve()
     if not is_path_allowed(p):
         log.error(f"Path '{p}' is not allowed. Allowed roots: {SHARE_DIR_ALLOWED_ROOTS}")
@@ -501,148 +626,14 @@ def main() -> int:
         log.error("ERROR: PATH is not on an NFS mount")
         return 2
 
-    remote_path = local_to_remote_path(args.path, mount)
-
     if args.action == "show":
-        return cmd_show(mount.server, remote_path)
-
-    if args.action in ("read", "readwrite", "undo") and not args.subject:
-        ap.error("LOGIN|GROUP is required")
-
-    subject_type, subject = resolve_subject(args.subject)
+        return cmd_show(mount.server, local_to_remote_path(args.path, mount))
 
     if args.action in ("read", "readwrite"):
-        # Determine which allowed root matched the local PATH, map it to the remote filesystem,
-        # and use it as the boundary for parent-directory traverse ACLs.
-        local_allowed_root = find_allowed_root_for_path(Path(args.path))
-        if not local_allowed_root:
-            log.error("Internal error: could not determine matching allowed root for '%s'", args.path)
-            return 3
-        remote_allowed_root = local_to_remote_path(str(local_allowed_root), mount)
-
-        apply_traverse_x(
-            mount.server,
-            remote_path,
-            remote_allowed_root,
-            subject_type,
-            subject,
-            args.dry_run,
-        )
-
-        # Determine locally whether PATH is a directory (no remote shell checks)
-        is_dir = Path(args.path).is_dir()
-
-        # Pre-check PATH locally so remote side can be a pure setfacl invocation (no shell syntax).
-        local_targets, local_dir_targets = collect_local_targets(Path(args.path), args.recurse)
-
-        if args.parent:
-            # Also include parent directories up to the allowed root
-            local_allowed_root = find_allowed_root_for_path(Path(args.path))
-            if local_allowed_root:
-                p_cur = Path(args.path).expanduser().resolve().parent
-                while p_cur != local_allowed_root and p_cur not in local_targets:
-                    local_targets.append(p_cur)
-                    local_dir_targets.append(p_cur)
-                    p_cur = p_cur.parent
-
-        # Map local targets to remote filesystem paths
-        remote_targets = [shlex.quote(local_to_remote_path(str(p), mount)) for p in local_targets]
-        remote_dir_targets = [shlex.quote(local_to_remote_path(str(p), mount)) for p in local_dir_targets]
-
-        cmds = build_setfacl_commands(
-            args.action,
-            subject_type,
-            subject,
-            remote_targets,
-            remote_dir_targets,
-        )
-
-        for remote_cmd in cmds:
-            if args.dry_run:
-                log.info(f"[dry-run] ssh {mount.server} {remote_cmd}")
-                continue
-
-            r = run_ssh(mount.server, remote_cmd)
-            sys.stdout.write(r.stdout)
-            sys.stderr.write(r.stderr)
-            if r.returncode != 0:
-                return r.returncode
-
-        log_action({
-            "ts": dt.datetime.now(dt.timezone.utc).isoformat(),
-            "action": args.action,
-            "local_path": os.path.realpath(args.path),
-            "nfs_server": mount.server,
-            "export": mount.export,
-            "remote_path": remote_path,
-            "subject_type": subject_type,
-            "subject": subject,
-            "perms": acl_perm_for_action(args.action),
-            "recurse": bool(args.recurse),
-            "dry_run": bool(args.dry_run),
-        })
-        return 0
+        return handle_read_readwrite(args, mount)
 
     if args.action == "undo":
-        if args.parent:
-            log.warning(
-                "You used --parent: this will remove ACL entries on parent directories too. "
-                "This may break other sharing configurations that rely on the same user/group entry."
-            )
-
-        # Pre-check PATH locally so remote side can be a pure setfacl invocation (no shell syntax).
-        local_targets, local_dir_targets = collect_local_targets(Path(args.path), args.recurse)
-
-        remote_targets = [shlex.quote(local_to_remote_path(str(p), mount)) for p in local_targets]
-        remote_dir_targets = [shlex.quote(local_to_remote_path(str(p), mount)) for p in local_dir_targets]
-
-        cmds = build_remove_acl_commands(
-            subject_type,
-            subject,
-            remote_targets,
-            remote_dir_targets,
-        )
-
-        for remote_cmd in cmds:
-            if args.dry_run:
-                log.info(f"[dry-run] ssh {mount.server} {remote_cmd}")
-                continue
-
-            r = run_ssh(mount.server, remote_cmd)
-            sys.stdout.write(r.stdout)
-            sys.stderr.write(r.stderr)
-            if r.returncode != 0:
-                # Undo should be best-effort; do not fail the whole command on a missing ACL entry.
-                log.warning("undo command failed (ignored): %s", r.stderr.strip())
-
-        if args.parent:
-            local_allowed_root = find_allowed_root_for_path(Path(args.path))
-            if not local_allowed_root:
-                log.error("Internal error: could not determine matching allowed root for '%s'", args.path)
-                return 3
-            remote_allowed_root = local_to_remote_path(str(local_allowed_root), mount)
-            remove_parent_acl_entry(
-                mount.server,
-                remote_path,
-                remote_allowed_root,
-                subject_type,
-                subject,
-                args.dry_run,
-            )
-
-        log_action({
-            "ts": dt.datetime.now(dt.timezone.utc).isoformat(),
-            "action": "undo",
-            "local_path": os.path.realpath(args.path),
-            "nfs_server": mount.server,
-            "export": mount.export,
-            "remote_path": remote_path,
-            "subject_type": subject_type,
-            "subject": subject,
-            "recurse": bool(args.recurse),
-            "dry_run": bool(args.dry_run),
-        })
-        return 0
+        return handle_undo(args, mount)
 
     return 1
 
