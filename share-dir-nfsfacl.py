@@ -452,7 +452,7 @@ def is_path_allowed(path: Path) -> bool:
     log.debug(f"checking is_path_allowed: {p} in {SHARE_DIR_ALLOWED_ROOTS}")
     for root in SHARE_DIR_ALLOWED_ROOTS.split(":"):
         try:
-            p.relative_to(root)
+            p.relative_to(Path(root))
         except ValueError:
             continue
 
