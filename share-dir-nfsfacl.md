@@ -81,18 +81,43 @@ share-dir-nfsfacl.py show /home/alice/share
 
 ## Recursive operation
 
-By default, only the directory itself and its **immediate children** are modified.
+By default, the tool applies ACLs only to the **directory itself and its immediate children**.
 
-Use `-r / --recurse` to apply ACLs recursively:
+Use `-r / --recurse` to ask the storage server to apply ACLs **recursively** using `setfacl -R`:
 
 ```
 share-dir-nfsfacl.py readwrite -r /home/alice/share bob
 ```
 
-This will:
+### Important implementation detail
 
-* apply ACLs to all files and subdirectories
-* apply **default ACLs** to all directories so new files inherit permissions
+Recursion is implemented by:
+
+* **always** collecting only a *limited local target set* (PATH + one level)
+* adding the `-R` flag to `setfacl` commands on the **storage server**
+
+This means:
+
+* recursion is executed entirely on the storage side
+* the tool does **not** enumerate the full directory tree locally
+* the number of SSH commands stays low even for very large directory trees
+
+### Default ACL behavior with recursion
+
+When recursion is enabled:
+
+* access ACLs are applied recursively using `setfacl -R -m ...`
+* default ACLs are also applied recursively using `setfacl -R -m d:...`
+
+Additionally, the tool automatically adds a default ACL entry for the **current user**
+(the user running the tool), ensuring that the space owner retains full access to
+newly created files and directories:
+
+```
+d:u:<current_user>:rwX
+```
+
+This does **not** change file ownership; it only affects inherited permissions.
 
 ---
 
@@ -176,19 +201,23 @@ If a path is outside allowed roots, the tool aborts.
 
 ## What happens under the hood
 
-For `read` / `readwrite`:
+### `read` / `readwrite`
 
 1. Determine which NFS mount backs the local path
 2. Resolve the corresponding server‑side path
-3. Ensure the user/group can **traverse parent directories** (`--x` only)
-4. Apply access ACLs to files and directories
-5. Apply default ACLs to directories
-6. Log the operation to `~/.shared_dirs`
+3. Verify the path is under an allowed root
+4. Ensure the user/group can **traverse parent directories** (`--x` only)
+5. Apply access ACLs using `setfacl` (optionally with `-R`)
+6. Apply default ACLs to directories (optionally with `-R`)
+7. Automatically add a default ACL entry for the current user (`d:u:<current_user>:rwX`)
+8. Log the operation to `~/.shared_dirs`
 
-For `undo`:
+### `undo`
 
-* ACL entries for the given user/group are removed
-* with `--parent`, parent directory ACLs are also cleaned up
+* Remove access ACL entries for the given user/group
+* Remove default ACL entries on directories
+* When `-r` is used, removal is done recursively using `setfacl -R`
+* With `--parent`, parent directory ACLs are also cleaned up (dangerous)
 
 ---
 
@@ -222,9 +251,41 @@ to inspect past actions.
 ## Notes and limitations
 
 * ACL changes are applied **on the storage server**, not on the FE
-* `ls` output on FE may still be misleading (missing `+`)
-* use `show` to see the real ACL state
-* undo is **best‑effort** (missing entries are ignored)
+* `ls` output on FE may be misleading (missing `+` for extended ACLs)
+* always use `show` to inspect the real ACL state
+* recursive operations rely on `setfacl -R` behavior of the storage filesystem
+* undo operations are **best‑effort** (missing entries are ignored)
+
+### `setfacl: Operation not permitted`
+
+During `read`, `readwrite`, or `undo` operations you may encounter errors like:
+
+```
+setfacl: <PATH>: Operation not permitted
+```
+
+This typically happens in the following scenario:
+
+* write access was granted to a directory via ACLs
+* a **different user** created files or subdirectories inside that directory
+* those newly created objects are **owned by that user**
+
+When the tool later tries to modify ACLs on such objects (especially during
+recursive operations), the storage filesystem may deny the change, resulting
+in this error.
+
+Important notes:
+
+* this is a **filesystem‑level permission issue**, not a bug in the tool
+* ownership of files is determined by the creating user and **cannot be overridden by ACLs**
+* the error may appear intermittently, depending on which objects are touched
+
+Recommended mitigations:
+
+* expect this behavior in shared writeable directories
+* use `--dry-run` to preview the scope of recursive operations
+* prefer group‑based sharing with controlled write access
+* avoid unnecessary recursive ACL changes on large, actively used trees
 
 ---
 
