@@ -590,17 +590,22 @@ def handle_undo(args, mount: NfsMount) -> int:
     return 0
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser(
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
         description="Manage sharing ACLs on NFS via getfacl/setfacl over SSH"
     )
-    ap.add_argument("action", choices=["read", "readwrite", "undo", "show", "list"])
-    ap.add_argument("path", nargs="?", help="Local path under NFS mount")
-    ap.add_argument("subject", nargs="?", help="LOGIN or GROUP (use @group to force group)")
-    ap.add_argument("-r", "--recurse", action="store_true")
-    ap.add_argument("-n", "--dry-run", action="store_true")
-    ap.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
-    ap.add_argument("-p", "--parent", action="store_true", help="For undo: also remove ACLs from parent directories (DANGEROUS)")
+    parser.add_argument("action", choices=["read", "readwrite", "undo", "show", "list"])
+    parser.add_argument("path", nargs="?", help="Local path under NFS mount")
+    parser.add_argument("subject", nargs="?", help="LOGIN or GROUP (use @group to force group)")
+    parser.add_argument("-r", "--recurse", action="store_true")
+    parser.add_argument("-n", "--dry-run", action="store_true")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
+    parser.add_argument("-p", "--parent", action="store_true", help="For undo: also remove ACLs from parent directories (DANGEROUS)")
+    return parser
+
+
+def main() -> int:
+    ap = build_arg_parser()
     args = ap.parse_args()
 
     level = logging.DEBUG if args.verbose else logging.INFO
