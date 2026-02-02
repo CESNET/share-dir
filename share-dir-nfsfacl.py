@@ -34,7 +34,7 @@ SHARE_DIR_ALLOWED_ROOTS = os.environ.get(
 )
 
 # Unified module logger
-log = logging.getLogger("share-dir")
+log = logging.getLogger("share-dir-nfsacl")
 
 @dataclass
 class NfsMount:
