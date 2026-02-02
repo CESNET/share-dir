@@ -468,7 +468,8 @@ def is_path_allowed(path: Path) -> bool:
             continue
 
         # Disallow operating directly on the root itself (e.g. /home or /home/user)
-        if p == root:
+        root_p = Path(root).expanduser().resolve()
+        if p == root_p:
             return False
 
         return True
