@@ -611,7 +611,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     read_parser = subparsers.add_parser(
         "read",
         help="Grant read ACL to a user or group on PATH.",
-        description="Grant read ACL to a user or group on PATH.",
         parents=[recursive_write_parent],
     )
     read_parser.add_argument("path", help="Local path under NFS mount")
@@ -620,7 +619,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     readwrite_parser = subparsers.add_parser(
         "readwrite",
         help="Grant read-write ACL to a user or group on PATH.",
-        description="Grant read-write ACL to a user or group on PATH.",
         parents=[recursive_write_parent],
     )
     readwrite_parser.add_argument("path", help="Local path under NFS mount")
@@ -629,7 +627,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     undo_parser = subparsers.add_parser(
         "undo",
         help="Remove ACL entries for a user or group from PATH.",
-        description="Remove ACL entries for a user or group from PATH.",
         parents=[recursive_write_parent],
     )
     undo_parser.add_argument("path", help="Local path under NFS mount")
@@ -644,7 +641,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     show_parser = subparsers.add_parser(
         "show",
         help="Show current ACLs for PATH.",
-        description="Show current ACLs for PATH.",
         parents=[verbose_parent],
     )
     show_parser.add_argument("path", help="Local path under NFS mount")
@@ -652,7 +648,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "list",
         help="List ACL changes recorded in ~/.shared_dirs.",
-        description="List ACL changes recorded in ~/.shared_dirs.",
         parents=[verbose_parent],
     )
     return parser
