@@ -405,6 +405,7 @@ def build_setfacl_commands(
     subject: str,
     remote_targets: List[str],
     remote_dir_targets: List[str],
+    owner_user: Optional[str] = None,
 ) -> List[str]:
     """Build remote *single-command* invocations (no shell operators)."""
     perms = acl_perm_for_action(action)
@@ -417,7 +418,11 @@ def build_setfacl_commands(
         cmds.append(base + " " + " ".join(ch))
 
     if remote_dir_targets:
-        base_d = f"setfacl -m d:{stype}:{shlex.quote(subject)}:{perms}"
+        extra_default = ""
+        if owner_user and not (subject_type == "user" and subject == owner_user):
+            extra_default = f",d:u:{shlex.quote(owner_user)}:rwX"
+
+        base_d = f"setfacl -m d:{stype}:{shlex.quote(subject)}:{perms}{extra_default}"
         for ch in _chunk_by_argv_limit(remote_dir_targets, base_len=len(base_d)):
             cmds.append(base_d + " " + " ".join(ch))
 
@@ -470,6 +475,17 @@ def is_path_allowed(path: Path) -> bool:
     return False
 
 
+def current_user_name() -> str:
+    """Return the logical 'current user' for default-owner ACL entry.
+
+    Preference order:
+    - SUDO_USER (if invoked via sudo wrapper)
+    - USER env
+    - getpass.getuser()
+    """
+    return os.environ.get("SUDO_USER") or os.environ.get("USER") or getpass.getuser()
+
+
 def handle_read_readwrite(args, mount: NfsMount) -> int:
     # Determine which allowed root matched the local PATH, map it to the remote filesystem,
     # and use it as the boundary for parent-directory traverse ACLs.
@@ -505,6 +521,7 @@ def handle_read_readwrite(args, mount: NfsMount) -> int:
         subject,
         remote_targets,
         remote_dir_targets,
+        owner_user=current_user_name(),
     )
 
     for remote_cmd in cmds:
