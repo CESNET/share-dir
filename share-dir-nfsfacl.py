@@ -406,14 +406,16 @@ def build_setfacl_commands(
     remote_targets: List[str],
     remote_dir_targets: List[str],
     owner_user: Optional[str] = None,
+    recurse: bool = False,
 ) -> List[str]:
     """Build remote *single-command* invocations (no shell operators)."""
     perms = acl_perm_for_action(action)
     stype = "u" if subject_type == "user" else "g"
 
     cmds: List[str] = []
+    recursive_flag = " -R" if recurse else ""
 
-    base = f"setfacl -m {stype}:{shlex.quote(subject)}:{perms}"
+    base = f"setfacl{recursive_flag} -m {stype}:{shlex.quote(subject)}:{perms}"
     for ch in _chunk_by_argv_limit(remote_targets, base_len=len(base)):
         cmds.append(base + " " + " ".join(ch))
 
@@ -422,7 +424,7 @@ def build_setfacl_commands(
         if owner_user and not (subject_type == "user" and subject == owner_user):
             extra_default = f",d:u:{shlex.quote(owner_user)}:rwX"
 
-        base_d = f"setfacl -m d:{stype}:{shlex.quote(subject)}:{perms}{extra_default}"
+        base_d = f"setfacl{recursive_flag} -m d:{stype}:{shlex.quote(subject)}:{perms}{extra_default}"
         for ch in _chunk_by_argv_limit(remote_dir_targets, base_len=len(base_d)):
             cmds.append(base_d + " " + " ".join(ch))
 
@@ -434,18 +436,20 @@ def build_remove_acl_commands(
     subject: str,
     remote_targets: List[str],
     remote_dir_targets: List[str],
+    recurse: bool = False,
 ) -> List[str]:
     """Build remote *single-command* invocations for undo (no shell operators)."""
     stype = "u" if subject_type == "user" else "g"
 
     cmds: List[str] = []
+    recursive_flag = " -R" if recurse else ""
 
-    base = f"setfacl -x {stype}:{shlex.quote(subject)}"
+    base = f"setfacl{recursive_flag} -x {stype}:{shlex.quote(subject)}"
     for ch in _chunk_by_argv_limit(remote_targets, base_len=len(base)):
         cmds.append(base + " " + " ".join(ch))
 
     if remote_dir_targets:
-        base_d = f"setfacl -x d:{stype}:{shlex.quote(subject)}"
+        base_d = f"setfacl{recursive_flag} -x d:{stype}:{shlex.quote(subject)}"
         for ch in _chunk_by_argv_limit(remote_dir_targets, base_len=len(base_d)):
             cmds.append(base_d + " " + " ".join(ch))
 
@@ -508,7 +512,7 @@ def handle_read_readwrite(args, mount: NfsMount) -> int:
     )
 
     # Pre-check PATH locally so remote side can be a pure setfacl invocation (no shell syntax).
-    local_targets, local_dir_targets = collect_local_targets(Path(args.path), args.recurse)
+    local_targets, local_dir_targets = collect_local_targets(Path(args.path), False)
 
     # Map local targets to remote filesystem paths
     remote_targets = [shlex.quote(local_to_remote_path(str(p), mount)) for p in local_targets]
@@ -523,6 +527,7 @@ def handle_read_readwrite(args, mount: NfsMount) -> int:
         remote_targets,
         remote_dir_targets,
         owner_user=current_user_name(),
+        recurse=bool(args.recurse),
     )
 
     for remote_cmd in cmds:
@@ -562,7 +567,7 @@ def handle_undo(args, mount: NfsMount) -> int:
     subject_type, subject = resolve_subject(args.subject)
     remote_path = local_to_remote_path(args.path, mount)
 
-    local_targets, local_dir_targets = collect_local_targets(Path(args.path), args.recurse)
+    local_targets, local_dir_targets = collect_local_targets(Path(args.path), False)
     remote_targets = [shlex.quote(local_to_remote_path(str(p), mount)) for p in local_targets]
     remote_dir_targets = [shlex.quote(local_to_remote_path(str(p), mount)) for p in local_dir_targets]
 
@@ -571,6 +576,7 @@ def handle_undo(args, mount: NfsMount) -> int:
         subject,
         remote_targets,
         remote_dir_targets,
+        recurse=bool(args.recurse),
     )
 
     for remote_cmd in cmds:
