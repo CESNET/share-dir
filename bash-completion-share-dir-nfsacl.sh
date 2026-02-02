@@ -133,4 +133,4 @@ _share_dir_nfsacl()
 }
 
 # Register completion for the final command name (no -v3 suffix)
-complete -F _share_dir_nfsacl share-dir-nfsacl
+complete -F _share_dir_nfsfacl share-dir-nfsfacl
