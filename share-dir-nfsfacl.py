@@ -139,15 +139,21 @@ def log_action(record: dict) -> None:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-def cmd_show(server: str, remote_path: str) -> int:
-    r = run_ssh(server, f"getfacl -p {shlex.quote(remote_path)}")
+def handle_show(args, server: str, remote_path: str) -> int:
+    show_command_base = ["getfacl" , "-p" ]
+    if args.recurse:
+        show_command_base.append("-r")
+    
+    show_command =  " ".join(show_command_base) + f" {shlex.quote(remote_path)}"
+
+    r = run_ssh(server, show_command)
     sys.stdout.write(r.stdout)
     if r.stderr:
         sys.stderr.write(r.stderr)
     return r.returncode
 
 
-def cmd_list() -> int:
+def handle_list() -> int:
     if not LOG_PATH.exists():
         log.info("No log file")
         return 0
@@ -659,7 +665,7 @@ def main() -> int:
     )
 
     if args.action == "list":
-        return cmd_list()
+        return handle_list()
 
     p = Path(args.path).expanduser().resolve()
     if not is_path_allowed(p):
@@ -673,7 +679,7 @@ def main() -> int:
         return 2
 
     if args.action == "show":
-        return cmd_show(mount.server, local_to_remote_path(args.path, mount))
+        return handle_show(args, mount.server, local_to_remote_path(args.path, mount))
 
     if args.action in ("read", "readwrite"):
         return handle_read_readwrite(args, mount)
