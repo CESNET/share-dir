@@ -594,13 +594,67 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Manage sharing ACLs on NFS via getfacl/setfacl over SSH"
     )
-    parser.add_argument("action", choices=["read", "readwrite", "undo", "show", "list"])
-    parser.add_argument("path", nargs="?", help="Local path under NFS mount")
-    parser.add_argument("subject", nargs="?", help="LOGIN or GROUP (use @group to force group)")
-    parser.add_argument("-r", "--recurse", action="store_true")
-    parser.add_argument("-n", "--dry-run", action="store_true")
-    parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
-    parser.add_argument("-p", "--parent", action="store_true", help="For undo: also remove ACLs from parent directories (DANGEROUS)")
+    verbose_parent = argparse.ArgumentParser(add_help=False)
+    verbose_parent.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
+
+    write_parent = argparse.ArgumentParser(add_help=False)
+    write_parent.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
+    write_parent.add_argument("-n", "--dry-run", action="store_true")
+
+    recursive_write_parent = argparse.ArgumentParser(add_help=False)
+    recursive_write_parent.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
+    recursive_write_parent.add_argument("-n", "--dry-run", action="store_true")
+    recursive_write_parent.add_argument("-r", "--recurse", action="store_true")
+
+    subparsers = parser.add_subparsers(dest="action", required=True, metavar="ACTION")
+
+    read_parser = subparsers.add_parser(
+        "read",
+        help="Grant read ACL to a user or group on PATH.",
+        description="Grant read ACL to a user or group on PATH.",
+        parents=[recursive_write_parent],
+    )
+    read_parser.add_argument("path", help="Local path under NFS mount")
+    read_parser.add_argument("subject", help="LOGIN or GROUP (use @group to force group)")
+
+    readwrite_parser = subparsers.add_parser(
+        "readwrite",
+        help="Grant read-write ACL to a user or group on PATH.",
+        description="Grant read-write ACL to a user or group on PATH.",
+        parents=[recursive_write_parent],
+    )
+    readwrite_parser.add_argument("path", help="Local path under NFS mount")
+    readwrite_parser.add_argument("subject", help="LOGIN or GROUP (use @group to force group)")
+
+    undo_parser = subparsers.add_parser(
+        "undo",
+        help="Remove ACL entries for a user or group from PATH.",
+        description="Remove ACL entries for a user or group from PATH.",
+        parents=[recursive_write_parent],
+    )
+    undo_parser.add_argument("path", help="Local path under NFS mount")
+    undo_parser.add_argument("subject", help="LOGIN or GROUP (use @group to force group)")
+    undo_parser.add_argument(
+        "-p",
+        "--parent",
+        action="store_true",
+        help="Also remove ACLs from parent directories (DANGEROUS)",
+    )
+
+    show_parser = subparsers.add_parser(
+        "show",
+        help="Show current ACLs for PATH.",
+        description="Show current ACLs for PATH.",
+        parents=[verbose_parent],
+    )
+    show_parser.add_argument("path", help="Local path under NFS mount")
+
+    subparsers.add_parser(
+        "list",
+        help="List ACL changes recorded in ~/.shared_dirs.",
+        description="List ACL changes recorded in ~/.shared_dirs.",
+        parents=[verbose_parent],
+    )
     return parser
 
 
@@ -616,9 +670,6 @@ def main() -> int:
 
     if args.action == "list":
         return cmd_list()
-
-    if not args.path:
-        ap.error("PATH is required")
 
     p = Path(args.path).expanduser().resolve()
     if not is_path_allowed(p):
