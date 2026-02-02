@@ -142,7 +142,7 @@ def log_action(record: dict) -> None:
 def handle_show(args, server: str, remote_path: str) -> int:
     show_command_base = ["getfacl" , "-p" ]
     if args.recurse:
-        show_command_base.append("-r")
+        show_command_base.append("-R")
     
     show_command =  " ".join(show_command_base) + f" {shlex.quote(remote_path)}"
 
