@@ -1,16 +1,16 @@
-# Bash completion for share-dir-nfsacl
+# Bash completion for share-dir-nfsfacl
 #
 # Save as (example):
-#   /etc/bash_completion.d/share-dir-nfsacl
+#   /etc/bash_completion.d/share-dir-nfsfacl
 # or (user):
-#   ~/.local/share/bash-completion/completions/share-dir-nfsacl
+#   ~/.local/share/bash-completion/completions/share-dir-nfsfacl
 #
 # NOTE:
-# - The script binary is expected to be named: share-dir-nfsacl
-# - This completion file name can stay "share-dir-nfsacl-v3" if you want, but the
+# - The script binary is expected to be named: share-dir-nfsfacl
+# - This completion file name can stay "share-dir-nfsfacl-v3" if you want, but the
 #   completion function targets the final command name (no -v3 suffix).
 
-_share_dir_nfsacl()
+_share_dir_nfsfacl()
 {
   local cur prev words cword
   _init_completion -s || return
