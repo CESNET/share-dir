@@ -110,7 +110,7 @@ _share_dir_nfsfacl()
 
     show)
       if [[ "$cur" == -* ]]; then
-        COMPREPLY=( $(compgen -W "${rw_opts} ${global_opts} ${common_path_opts}" -- "$cur") )
+        COMPREPLY=( $(compgen -W "${rw_opts} ${global_opts} ${common_path_opts} --raw" -- "$cur") )
         return
       fi
       _filedir -d

@@ -148,7 +148,10 @@ def handle_show(args, server: str, remote_path: str) -> int:
 
     r = run_ssh(server, show_command)
     if r.stdout:
-        sys.stdout.write(format_show_output(r.stdout))
+        if args.raw:
+            sys.stdout.write(r.stdout)
+        else:
+            sys.stdout.write(format_show_output(r.stdout))
     if r.stderr:
         sys.stderr.write(r.stderr)
     return r.returncode
@@ -789,6 +792,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         parents=[common_opts],
     )
     show_parser.add_argument("path", help="Local path under NFS mount")
+    show_parser.add_argument(
+        "--raw",
+        action="store_true",
+        help="Print original getfacl output without human-readable formatting.",
+    )
 
     subparsers.add_parser(
         "list",
