@@ -22,7 +22,7 @@ import sys
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Dict, Set
 
 LOG_PATH = Path.home() / ".shared_dirs"
 
@@ -147,10 +147,130 @@ def handle_show(args, server: str, remote_path: str) -> int:
     show_command =  " ".join(show_command_base) + f" {shlex.quote(remote_path)}"
 
     r = run_ssh(server, show_command)
-    sys.stdout.write(r.stdout)
+    if r.stdout:
+        sys.stdout.write(format_show_output(r.stdout))
     if r.stderr:
         sys.stderr.write(r.stderr)
     return r.returncode
+
+
+def format_show_output(raw_output: str) -> str:
+    """Convert getfacl output into read/write/execute schema per file."""
+    blocks = split_getfacl_blocks(raw_output)
+    rendered: List[str] = []
+
+    for block in blocks:
+        file_path = block.get("file", "")
+        owner = block.get("owner", "")
+        group = block.get("group", "")
+        entries = block.get("entries", [])
+
+        perms_map: Dict[str, Set[str]] = {
+            "read": set(),
+            "write": set(),
+            "execute": set(),
+        }
+
+        for tag, name, perms in entries:
+            principal = normalize_principal(tag, name, owner, group)
+            if principal is None:
+                continue
+            if "r" in perms:
+                perms_map["read"].add(principal)
+            if "w" in perms:
+                perms_map["write"].add(principal)
+            if "x" in perms:
+                perms_map["execute"].add(principal)
+
+        block_lines: List[str] = []
+        if file_path:
+            block_lines.append(f"# file: {file_path}")
+        for label in ("read", "write", "execute"):
+            subjects = ",".join(sorted(perms_map[label], key=principal_sort_key))
+            block_lines.append(f"{label} {subjects}")
+        rendered.append("\n".join(block_lines))
+
+    if not rendered:
+        return ""
+    return "\n\n".join(rendered) + "\n"
+
+
+def split_getfacl_blocks(raw_output: str) -> List[Dict[str, object]]:
+    blocks: List[Dict[str, object]] = []
+    current: Optional[Dict[str, object]] = None
+
+    for line in raw_output.splitlines():
+        if line.startswith("# file: "):
+            if current is not None:
+                blocks.append(current)
+            current = {
+                "file": line[len("# file: "):].strip(),
+                "owner": "",
+                "group": "",
+                "entries": [],
+            }
+            continue
+
+        if current is None:
+            continue
+
+        if line.startswith("# owner: "):
+            current["owner"] = line[len("# owner: "):].strip()
+            continue
+        if line.startswith("# group: "):
+            current["group"] = line[len("# group: "):].strip()
+            continue
+
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.startswith("default:"):
+            continue
+
+        # Ignore trailing '#effective:...' comments.
+        acl_part = stripped.split("#", 1)[0].strip()
+        parts = acl_part.split(":")
+        if len(parts) < 3:
+            continue
+
+        tag = parts[0]
+        name = parts[1]
+        perms = parts[2]
+        entries = current["entries"]
+        if isinstance(entries, list):
+            entries.append((tag, name, perms))
+
+    if current is not None:
+        blocks.append(current)
+    return blocks
+
+
+def normalize_principal(
+    tag: str,
+    name: str,
+    owner: str,
+    group: str,
+) -> Optional[str]:
+    if tag == "user":
+        subject = name if name else owner
+        if not subject:
+            return None
+        return f"user:{subject}"
+    if tag == "group":
+        subject = name if name else group
+        if not subject:
+            return None
+        return f"group:{subject}"
+    return None
+
+
+def principal_sort_key(principal: str) -> Tuple[int, str]:
+    # Keep users first, then groups, both alphabetically by full principal text.
+    if principal.startswith("user:"):
+        return (0, principal)
+    if principal.startswith("group:"):
+        return (1, principal)
+    return (2, principal)
 
 
 def handle_list() -> int:
