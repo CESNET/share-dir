@@ -1,53 +1,68 @@
 # share-dir-nfsfacl
 
-User manual for **share-dir-nfsfacl.py** – a command‑line tool for managing extended POSIX ACLs on NFS directories by applying changes **directly on the storage server over SSH**.
+User manual for **share-dir-nfsfacl.py** - a command-line tool for managing extended POSIX ACLs on NFS paths by applying changes directly on the storage server over SSH.
 
 ---
 
 ## Purpose
 
-On front‑end (FE) machines with NFS mounts, standard tools like `ls` do **not reliably show extended ACLs** and `setfacl` may be unavailable or intentionally restricted.
+On front-end (FE) machines with NFS mounts, standard tools like `ls` may not reliably show extended ACLs, and `setfacl` may be unavailable or restricted.
 
 `share-dir-nfsfacl.py` solves this by:
 
-* detecting which **NFS server** backs a given local path
-* mapping the local path to the **server‑side filesystem path**
-* applying ACL changes **on the storage server** via `getfacl` / `setfacl` over SSH
-* keeping a local **audit log** of all changes
-
-The tool is designed to be:
-
-* safe (explicit allowed roots, no shell pipelines)
-* compatible with restricted environments (e.g. jailkit)
-* predictable and auditable
+* detecting which NFS server backs a local path
+* mapping local path to server-side filesystem path
+* applying ACL changes on the storage server via `getfacl` / `setfacl` over SSH
+* writing a local audit log for modifying operations
 
 ---
 
-## Supported actions
+## CLI synopsis
 
+```text
+share-dir-nfsfacl.py [-v] [-n] [-r] ACTION ...
+
+ACTION forms:
+  read      PATH LOGIN|GROUP|@GROUP
+  readwrite PATH LOGIN|GROUP|@GROUP
+  undo      [-p|--parent] PATH LOGIN|GROUP|@GROUP
+  show      [--raw] PATH
+  list
 ```
-share-dir-nfsfacl.py {read,readwrite,undo,show,list} [PATH] [LOGIN|@GROUP]
-```
+
+Common flags `-v`, `-n`, `-r` are accepted both before and after `ACTION`.
+
+---
+
+## Actions
 
 ### `read`
 
-Grant **read‑only** access (`r-X`) to a user or group.
+Grant read access (`r-X`) to a user or group.
 
 ### `readwrite`
 
-Grant **read/write** access (`rwX`) to a user or group.
+Grant read/write access (`rwX`) to a user or group.
 
 ### `undo`
 
-Remove ACL entries previously added for a user or group.
+Remove ACL entries for a user or group.
 
 ### `show`
 
-Show the effective ACLs on the storage server using `getfacl`.
+Show ACLs from storage using `getfacl -p`.
+
+By default, output is reformatted per file into:
+
+* `read user:...,group:...`
+* `write user:...,group:...`
+* `execute user:...,group:...`
+
+Use `--raw` to print original `getfacl` output unchanged.
 
 ### `list`
 
-List previously executed ACL changes recorded in the local log file.
+Print the local audit log from `~/.shared_dirs`.
 
 ---
 
@@ -55,147 +70,137 @@ List previously executed ACL changes recorded in the local log file.
 
 ### Share a directory for reading
 
-```
+```bash
 share-dir-nfsfacl.py read /home/alice/share bob
 ```
 
 ### Share a directory for read/write access
 
-```
+```bash
 share-dir-nfsfacl.py readwrite /home/alice/share bob
 ```
 
 ### Share with a group
 
-```
+```bash
 share-dir-nfsfacl.py read /home/alice/share @research
 ```
 
-### Show current ACLs (from storage)
+### Show current ACLs (formatted)
 
-```
+```bash
 share-dir-nfsfacl.py show /home/alice/share
 ```
 
+### Show raw `getfacl` output
+
+```bash
+share-dir-nfsfacl.py show --raw /home/alice/share
+```
+
+### List logged changes
+
+```bash
+share-dir-nfsfacl.py list
+```
+
 ---
 
-## Recursive operation
+## Recursion model
 
-By default, the tool applies ACLs only to the **directory itself and its immediate children**.
+By default, local target expansion is limited to the specified path and (for directories) immediate children.
 
-Use `-r / --recurse` to ask the storage server to apply ACLs **recursively** using `setfacl -R`:
+Use `-r / --recurse` to run recursive operations on storage:
 
-```
-share-dir-nfsfacl.py readwrite -r /home/alice/share bob
-```
+* `read` / `readwrite`: `setfacl -R -m ...`
+* `undo`: `setfacl -R -x ...`
+* `show`: `getfacl -R -p ...`
 
-### Important implementation detail
+Important detail:
 
-Recursion is implemented by:
+* local enumeration stays limited to PATH + one level
+* deep traversal is delegated to remote `-R`
+* this keeps SSH command count low even for large trees
 
-* **always** collecting only a *limited local target set* (PATH + one level)
-* adding the `-R` flag to `setfacl` commands on the **storage server**
+---
 
-This means:
+## Default ACL behavior
 
-* recursion is executed entirely on the storage side
-* the tool does **not** enumerate the full directory tree locally
-* the number of SSH commands stays low even for very large directory trees
+For directory targets, the tool also sets default ACLs (`d:...`) so new children inherit access.
 
-### Default ACL behavior with recursion
+When sharing to another subject, it also adds a default ACL entry for the current user:
 
-When recursion is enabled:
-
-* access ACLs are applied recursively using `setfacl -R -m ...`
-* default ACLs are also applied recursively using `setfacl -R -m d:...`
-
-Additionally, the tool automatically adds a default ACL entry for the **current user**
-(the user running the tool), ensuring that the space owner retains full access to
-newly created files and directories:
-
-```
+```text
 d:u:<current_user>:rwX
 ```
 
-This does **not** change file ownership; it only affects inherited permissions.
+Current user resolution order:
+
+* `SUDO_USER`
+* `USER`
+* `getpass.getuser()` fallback
+
+This does not change file ownership.
 
 ---
 
-## Undoing changes
+## Undo behavior
 
 ### Basic undo
 
-```
+```bash
 share-dir-nfsfacl.py undo /home/alice/share bob
 ```
 
 This removes:
 
-* access ACL entries (`u:bob` or `g:group`)
-* default ACL entries on directories
+* access ACL entries (`u:<name>` / `g:<name>`)
+* default ACL entries on directories (`d:u:<name>` / `d:g:<name>`)
 
-### Undo including parent directories (**dangerous**)
+### Undo including parent directories (dangerous)
 
-```
+```bash
 share-dir-nfsfacl.py undo -p /home/alice/share bob
 ```
 
-⚠️ **WARNING**
+Warning: `-p / --parent` removes the full ACL entry for that subject on parent directories up to the matched allowed root. This can break other sharing setups.
 
-Using `-p / --parent` also removes ACL entries on **parent directories** up to the allowed root.
-
-This may:
-
-* break other sharing setups
-* remove access required by other projects
-
-Use this option **only if you fully understand the ACL layout**.
+Undo is best-effort: failures in undo commands are logged as warnings and processing continues.
 
 ---
 
-## Dry‑run mode
+## Dry-run mode
 
-Use `-n / --dry-run` to see what would be executed **without changing anything**:
+Use `-n / --dry-run` with `read`, `readwrite`, or `undo` to preview remote `setfacl` commands without modifying ACLs.
 
-```
+```bash
 share-dir-nfsfacl.py readwrite -n -r /home/alice/share bob
 ```
-
-Dry‑run shows the exact SSH + `setfacl` commands that would run on the storage server.
 
 ---
 
 ## Verbose logging
 
-Enable debug logging with:
+Enable debug logging with `-v / --verbose`.
 
-```
--v / --verbose
-```
-
-This prints:
-
-* local helper commands (`getent`, path checks)
-* SSH commands sent to the storage server
+This includes helper command and SSH command details.
 
 ---
 
 ## Allowed roots and safety model
 
-The tool only operates under **explicitly allowed directory roots**.
+The tool only operates under explicitly allowed roots configured by:
 
-Configured via environment variable:
-
-```
+```bash
 SHARE_DIR_ALLOWED_ROOTS="$HOME:/storage:/scratch"
 ```
 
 Rules:
 
-* the target path must be **below** one of these roots
+* target path must be under one of these roots
 * operating directly on the root itself is forbidden
 
-If a path is outside allowed roots, the tool aborts.
+If a path is outside allowed roots, the tool exits with code `3`.
 
 ---
 
@@ -203,107 +208,86 @@ If a path is outside allowed roots, the tool aborts.
 
 ### `read` / `readwrite`
 
-1. Determine which NFS mount backs the local path
-2. Resolve the corresponding server‑side path
-3. Verify the path is under an allowed root
-4. Ensure the user/group can **traverse parent directories** (`--x` only)
-5. Apply access ACLs using `setfacl` (optionally with `-R`)
-6. Apply default ACLs to directories (optionally with `-R`)
-7. Automatically add a default ACL entry for the current user (`d:u:<current_user>:rwX`)
-8. Log the operation to `~/.shared_dirs`
+1. Resolve local path and validate allowed root.
+2. Detect NFS mount and map local path to remote path.
+3. Resolve subject type (`user` or `group`; `@name` forces group).
+4. Ensure parent directory traversal via `setfacl -m <u|g>:<subject>:--x` up to allowed root boundary.
+5. Build local target sets (PATH + immediate children).
+6. Build and run remote `setfacl` commands (optionally with `-R`), chunking long target lists.
+7. Log operation to `~/.shared_dirs`.
 
 ### `undo`
 
-* Remove access ACL entries for the given user/group
-* Remove default ACL entries on directories
-* When `-r` is used, removal is done recursively using `setfacl -R`
-* With `--parent`, parent directory ACLs are also cleaned up (dangerous)
+1. Resolve subject and targets.
+2. Run remote remove commands for access ACL and default ACL (optionally `-R`).
+3. If `--parent` is set, remove subject entry from parent directories up to allowed root.
+4. Log operation.
+
+### `show`
+
+1. Map local path to remote path.
+2. Run `getfacl -p` (and `-R` when requested).
+3. Print formatted view (default) or raw output (`--raw`).
+
+### `list`
+
+Print JSONL log entries from `~/.shared_dirs` as readable one-line records.
 
 ---
 
 ## Audit log
 
-All modifying actions are logged to:
+Modifying actions (`read`, `readwrite`, `undo`) append JSON lines to:
 
-```
+```text
 ~/.shared_dirs
 ```
 
-Each entry contains:
-
-* timestamp (UTC)
-* action (`read`, `readwrite`, `undo`)
-* local path
-* NFS server and export
-* subject (user/group)
-* recursion and dry‑run flags
-
-Use:
-
-```
-share-dir-nfsfacl.py list
-```
-
-to inspect past actions.
+Typical fields include timestamp, action, local path, NFS server/export, remote path, subject, permissions (for grants), recursion flag, and dry-run flag.
 
 ---
 
 ## Notes and limitations
 
-* ACL changes are applied **on the storage server**, not on the FE
-* `ls` output on FE may be misleading (missing `+` for extended ACLs)
-* always use `show` to inspect the real ACL state
-* recursive operations rely on `setfacl -R` behavior of the storage filesystem
-* undo operations are **best‑effort** (missing entries are ignored)
+* ACL changes are applied on storage, not on FE.
+* `ls` on FE may not reflect extended ACL state reliably.
+* use `show` to inspect ACL state; use `show --raw` for exact `getfacl` output
+* recursive behavior depends on storage filesystem `setfacl/getfacl` behavior
+* undo operations are best-effort
 
 ### `setfacl: Operation not permitted`
 
-During `read`, `readwrite`, or `undo` operations you may encounter errors like:
+You may see errors like:
 
-```
+```text
 setfacl: <PATH>: Operation not permitted
 ```
 
-This typically happens in the following scenario:
+Common cause:
 
-* write access was granted to a directory via ACLs
-* a **different user** created files or subdirectories inside that directory
-* those newly created objects are **owned by that user**
+* write ACL allows another user to create files/directories
+* those objects are owned by that other user
+* later ACL modification on those objects is denied by the filesystem
 
-When the tool later tries to modify ACLs on such objects (especially during
-recursive operations), the storage filesystem may deny the change, resulting
-in this error.
-
-Important notes:
-
-* this is a **filesystem‑level permission issue**, not a bug in the tool
-* ownership of files is determined by the creating user and **cannot be overridden by ACLs**
-* the error may appear intermittently, depending on which objects are touched
-
-Recommended mitigations:
-
-* expect this behavior in shared writeable directories
-* use `--dry-run` to preview the scope of recursive operations
-* prefer group‑based sharing with controlled write access
-* avoid unnecessary recursive ACL changes on large, actively used trees
+This is a filesystem-level permission issue, not ownership override by ACL.
 
 ---
 
 ## Exit codes
 
-* `0` – success
-* `2` – path not on NFS
-* `3` – security / configuration error
-* `130` – interrupted by user
+* `0` - success
+* `2` - path not on NFS
+* `3` - security/configuration error
+* `130` - interrupted by user
 
 ---
 
 ## Recommended usage pattern
 
-* always start with `-n` when unsure
-* prefer group‑based sharing (`@group`)
-* avoid `--parent` unless absolutely necessary
-* use `show` instead of `ls` to inspect ACLs
+* start with `-n` when unsure
+* prefer group sharing (`@group`) for teams
+* avoid `--parent` unless needed
+* use `show` (or `show --raw`) instead of `ls` for ACL verification
 
 ---
 
