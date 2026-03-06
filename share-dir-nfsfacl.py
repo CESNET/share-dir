@@ -744,14 +744,24 @@ def handle_undo(args, mount: NfsMount) -> int:
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    common_opts = argparse.ArgumentParser(add_help=False)
-    common_opts.add_argument("-v", "--verbose", action="store_true", help="Enable verbose logging")
-    common_opts.add_argument("-n", "--dry-run", action="store_true")
-    common_opts.add_argument("-r", "--recurse", action="store_true")
+    def add_common_options(target: argparse.ArgumentParser, suppress_defaults: bool = False) -> None:
+        default = argparse.SUPPRESS if suppress_defaults else False
+        target.add_argument("-v", "--verbose", action="store_true", default=default, help="Enable verbose logging")
+        target.add_argument("-n", "--dry-run", action="store_true", default=default)
+        target.add_argument("-r", "--recurse", action="store_true", default=default)
+
+    common_opts_global = argparse.ArgumentParser(add_help=False)
+    add_common_options(common_opts_global, suppress_defaults=False)
+
+    # Subparser copy of common flags allows options both before and after ACTION.
+    # Defaults are suppressed here so they do not overwrite values already parsed
+    # from top-level options (e.g. `-r show path`).
+    common_opts_sub = argparse.ArgumentParser(add_help=False)
+    add_common_options(common_opts_sub, suppress_defaults=True)
 
     parser = argparse.ArgumentParser(
         description="Manage sharing ACLs on NFS via getfacl/setfacl over SSH",
-        parents=[common_opts],
+        parents=[common_opts_global],
     )
 
     subparsers = parser.add_subparsers(dest="action", required=True, metavar="ACTION")
@@ -759,7 +769,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     read_parser = subparsers.add_parser(
         "read",
         help="Grant read ACL to a user or group on PATH.",
-        parents=[common_opts],
+        parents=[common_opts_sub],
     )
     read_parser.add_argument("path", help="Local path under NFS mount")
     read_parser.add_argument("subject", help="LOGIN or GROUP (use @group to force group)")
@@ -767,7 +777,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     readwrite_parser = subparsers.add_parser(
         "readwrite",
         help="Grant read-write ACL to a user or group on PATH.",
-        parents=[common_opts],
+        parents=[common_opts_sub],
     )
     readwrite_parser.add_argument("path", help="Local path under NFS mount")
     readwrite_parser.add_argument("subject", help="LOGIN or GROUP (use @group to force group)")
@@ -775,7 +785,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     undo_parser = subparsers.add_parser(
         "undo",
         help="Remove ACL entries for a user or group from PATH.",
-        parents=[common_opts],
+        parents=[common_opts_sub],
     )
     undo_parser.add_argument("path", help="Local path under NFS mount")
     undo_parser.add_argument("subject", help="LOGIN or GROUP (use @group to force group)")
@@ -789,7 +799,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     show_parser = subparsers.add_parser(
         "show",
         help="Show current ACLs for PATH.",
-        parents=[common_opts],
+        parents=[common_opts_sub],
     )
     show_parser.add_argument("path", help="Local path under NFS mount")
     show_parser.add_argument(
@@ -801,7 +811,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "list",
         help="List ACL changes recorded in ~/.shared_dirs.",
-        parents=[common_opts],
+        parents=[common_opts_sub],
     )
     return parser
 
