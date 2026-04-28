@@ -109,10 +109,14 @@ def resolve_subject(name: str) -> Tuple[str, str]:
     Rules:
     - If name starts with '@' -> group
     - Else: try passwd, then group
-    - Fallback: user
+    - Fail if neither exists locally
     """
     if name.startswith("@"):  # force group
-        return "group", name[1:]
+        group_name = name[1:]
+        r = run_local(["getent", "group", group_name])
+        if r.returncode == 0 and r.stdout.strip():
+            return "group", group_name
+        raise SystemExit(f"group '{group_name}' does not exist")
 
     r = run_local(["getent", "passwd", name])
     if r.returncode == 0 and r.stdout.strip():
@@ -122,7 +126,7 @@ def resolve_subject(name: str) -> Tuple[str, str]:
     if r.returncode == 0 and r.stdout.strip():
         return "group", name
 
-    return "user", name
+    raise SystemExit(f"user or group '{name}' does not exist")
 
 
 def acl_perm_for_action(action: str) -> str:
@@ -615,6 +619,8 @@ def current_user_name() -> str:
 
 
 def handle_read_readwrite(args, mount: NfsMount) -> int:
+    subject_type, subject = resolve_subject(args.subject)
+
     # Determine which allowed root matched the local PATH, map it to the remote filesystem,
     # and use it as the boundary for parent-directory traverse ACLs.
     local_allowed_root = find_allowed_root_for_path(Path(args.path))
@@ -629,8 +635,8 @@ def handle_read_readwrite(args, mount: NfsMount) -> int:
         mount.server,
         remote_path,
         remote_allowed_root,
-        resolve_subject(args.subject)[0],
-        resolve_subject(args.subject)[1],
+        subject_type,
+        subject,
         args.dry_run,
     )
 
@@ -640,8 +646,6 @@ def handle_read_readwrite(args, mount: NfsMount) -> int:
     # Map local targets to remote filesystem paths
     remote_targets = [shlex.quote(local_to_remote_path(str(p), mount)) for p in local_targets]
     remote_dir_targets = [shlex.quote(local_to_remote_path(str(p), mount)) for p in local_dir_targets]
-
-    subject_type, subject = resolve_subject(args.subject)
 
     cmds = build_setfacl_commands(
         args.action,

@@ -86,6 +86,12 @@ share-dir-nfsfacl.py readwrite /home/alice/share bob
 share-dir-nfsfacl.py read /home/alice/share @research
 ```
 
+Subject resolution rules:
+
+* `@group` forces group lookup
+* bare names are checked as user first, then group
+* if neither exists locally, the command exits with a clear error instead of passing an invalid subject to `setfacl`
+
 ### Show current ACLs (formatted)
 
 ```bash
