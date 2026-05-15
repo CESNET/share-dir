@@ -16,9 +16,11 @@ import argparse
 import datetime as dt
 import json
 import os
+import socket
 import shlex
 import subprocess
 import sys
+import syslog
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,6 +37,27 @@ SHARE_DIR_ALLOWED_ROOTS = os.environ.get(
 
 # Unified module logger
 log = logging.getLogger("share-dir-nfsacl")
+
+
+def log_script_usage(tag: str = "meta-utils") -> None:
+    user = os.environ.get("USER") or os.environ.get("LOGNAME") or "unknown"
+    hostname = socket.getfqdn()
+
+    script = sys.argv[0]
+    args = " ".join(shlex.quote(arg) for arg in sys.argv[1:])
+
+    message = f"{user}@{hostname} {script} (({args}))"
+
+    try:
+        syslog.openlog(tag, syslog.LOG_PID, syslog.LOG_USER)
+        syslog.syslog(syslog.LOG_INFO, message)
+    except Exception:
+        pass
+    finally:
+        try:
+            syslog.closelog()
+        except Exception:
+            pass
 
 @dataclass
 class NfsMount:
@@ -857,6 +880,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    log_script_usage()
     try:
         sys.exit(main())
     except KeyboardInterrupt:
