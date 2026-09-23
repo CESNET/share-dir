@@ -374,6 +374,64 @@ class CliTests(HomeDirectoryTestCase):
         resolve_subject.assert_not_called()
         run_ssh.assert_not_called()
 
+    def test_symlink_uses_canonical_target_path(self) -> None:
+        target = self.test_root / "target"
+        target.mkdir()
+        link = self.test_root / "link"
+        link.symlink_to(target, target_is_directory=True)
+        mount = tool.NfsMount(str(self.test_root), "nfs.example", "/srv/test")
+        old_roots = tool.SHARE_DIR_ALLOWED_ROOTS
+        tool.SHARE_DIR_ALLOWED_ROOTS = str(self.test_root)
+        self.addCleanup(setattr, tool, "SHARE_DIR_ALLOWED_ROOTS", old_roots)
+
+        argv = [str(SCRIPT), "show", str(link)]
+        result = subprocess.CompletedProcess([], 0, "", "")
+        with mock.patch.object(sys, "argv", argv), mock.patch.object(
+            tool, "parse_proc_mounts", return_value=[mount]
+        ), mock.patch.object(tool, "run_ssh", return_value=result) as run_ssh:
+            status = tool.main()
+
+        self.assertEqual(status, 0)
+        run_ssh.assert_called_once_with("nfs.example", "getfacl -p /srv/test/target")
+
+    def test_dangling_symlink_is_rejected_as_missing(self) -> None:
+        link = self.test_root / "link"
+        link.symlink_to(self.test_root / "missing", target_is_directory=True)
+        old_roots = tool.SHARE_DIR_ALLOWED_ROOTS
+        tool.SHARE_DIR_ALLOWED_ROOTS = str(self.test_root)
+        self.addCleanup(setattr, tool, "SHARE_DIR_ALLOWED_ROOTS", old_roots)
+
+        argv = [str(SCRIPT), "show", str(link)]
+        with mock.patch.object(sys, "argv", argv), mock.patch.object(
+            tool, "parse_proc_mounts"
+        ) as parse_mounts, mock.patch.object(tool, "run_ssh") as run_ssh:
+            status = tool.main()
+
+        self.assertEqual(status, 2)
+        parse_mounts.assert_not_called()
+        run_ssh.assert_not_called()
+
+    def test_symlink_cannot_escape_allowed_root(self) -> None:
+        allowed = self.test_root / "allowed"
+        allowed.mkdir()
+        outside = self.test_root / "outside"
+        outside.mkdir()
+        link = allowed / "link"
+        link.symlink_to(outside, target_is_directory=True)
+        old_roots = tool.SHARE_DIR_ALLOWED_ROOTS
+        tool.SHARE_DIR_ALLOWED_ROOTS = str(allowed)
+        self.addCleanup(setattr, tool, "SHARE_DIR_ALLOWED_ROOTS", old_roots)
+
+        argv = [str(SCRIPT), "show", str(link)]
+        with mock.patch.object(sys, "argv", argv), mock.patch.object(
+            tool, "parse_proc_mounts"
+        ) as parse_mounts, mock.patch.object(tool, "run_ssh") as run_ssh:
+            status = tool.main()
+
+        self.assertEqual(status, 3)
+        parse_mounts.assert_not_called()
+        run_ssh.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
