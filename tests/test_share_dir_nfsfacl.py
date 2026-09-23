@@ -43,16 +43,22 @@ class HomeDirectoryTestCase(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.cache_root = Path(
+        cache_root = Path(
             os.environ.get(
                 "SHARE_DIR_TEST_BASE",
                 Path.home() / "nfsacl-test" / "share-dir-nfsfacl-tests",
             )
         ).expanduser()
-        cls.cache_root.mkdir(parents=True, exist_ok=True)
+        cache_root.mkdir(parents=True, exist_ok=True)
+        # NFS homes may be exposed through an alias such as /storage while
+        # realpath() returns the autofs path under /auto.  The tool deliberately
+        # canonicalizes paths, so fixtures and expected values must do the same.
+        cls.cache_root = cache_root.resolve()
 
     def setUp(self) -> None:
-        self.test_root = Path(tempfile.mkdtemp(prefix="case-", dir=self.cache_root))
+        self.test_root = Path(
+            tempfile.mkdtemp(prefix="case-", dir=self.cache_root)
+        ).resolve()
 
     def tearDown(self) -> None:
         shutil.rmtree(self.test_root)
