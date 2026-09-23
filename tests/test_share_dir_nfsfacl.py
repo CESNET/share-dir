@@ -353,6 +353,27 @@ class CliTests(HomeDirectoryTestCase):
         self.assertEqual(status, 3)
         parse_mounts.assert_not_called()
 
+    def test_missing_path_stops_before_any_remote_processing(self) -> None:
+        missing = self.test_root / "missing"
+        old_roots = tool.SHARE_DIR_ALLOWED_ROOTS
+        tool.SHARE_DIR_ALLOWED_ROOTS = str(self.test_root)
+        self.addCleanup(setattr, tool, "SHARE_DIR_ALLOWED_ROOTS", old_roots)
+
+        argv = [str(SCRIPT), "read", str(missing), "bob"]
+        with mock.patch.object(sys, "argv", argv), mock.patch.object(
+            tool, "parse_proc_mounts"
+        ) as parse_mounts, mock.patch.object(
+            tool, "resolve_subject"
+        ) as resolve_subject, mock.patch.object(
+            tool, "run_ssh"
+        ) as run_ssh:
+            status = tool.main()
+
+        self.assertEqual(status, 2)
+        parse_mounts.assert_not_called()
+        resolve_subject.assert_not_called()
+        run_ssh.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
