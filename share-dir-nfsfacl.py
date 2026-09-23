@@ -606,28 +606,24 @@ def build_remove_acl_commands(
     return cmds
 
 
-def is_path_allowed(path: Path) -> bool:
+def is_path_allowed(path: Path, allow_root: bool = False) -> bool:
     """
     Check whether the given path is under one of the allowed roots.
 
-    Special case:
-    - If allowed root is $HOME, user may only operate *below* $HOME (not on $HOME itself).
+    Operating directly on a matched root is rejected unless allow_root is true.
+    This lets read-only actions inspect a root while keeping mutating actions below it.
     """
     p = path.resolve()
     log.debug(f"checking is_path_allowed: {p} in {SHARE_DIR_ALLOWED_ROOTS}")
-    for root in SHARE_DIR_ALLOWED_ROOTS.split(":"):
-        try:
-            p.relative_to(Path(root))
-        except ValueError:
-            continue
+    root = find_allowed_root_for_path(p)
+    if root is None:
+        return False
 
-        root_p = Path(root).expanduser().resolve()
-        if p == root_p:
-            log.debug("Disallow operating directly on the root itself")
-            return False
+    if p == root and not allow_root:
+        log.debug("Disallow operating directly on the root itself")
+        return False
 
-        return True
-    return False
+    return True
 
 
 def current_user_name() -> str:
@@ -857,7 +853,8 @@ def main() -> int:
         return handle_list()
 
     p = Path(args.path).expanduser().resolve()
-    if not is_path_allowed(p):
+    allow_root = args.action == "show"
+    if not is_path_allowed(p, allow_root=allow_root):
         log.error(f"Path '{p}' is not allowed. Allowed roots: {SHARE_DIR_ALLOWED_ROOTS}")
         return 3
 

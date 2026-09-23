@@ -204,7 +204,8 @@ SHARE_DIR_ALLOWED_ROOTS="$HOME:/storage:/scratch"
 Rules:
 
 * target path must be under one of these roots
-* operating directly on the root itself is forbidden
+* read-only `show` may inspect an allowed root directly
+* modifying actions (`read`, `readwrite`, and `undo`) may only operate below an allowed root
 
 If a path is outside allowed roots, the tool exits with code `3`.
 
