@@ -203,10 +203,12 @@ SHARE_DIR_ALLOWED_ROOTS="$HOME:/storage:/scratch"
 
 Rules:
 
+* target path must exist locally
 * target path must be under one of these roots
 * read-only `show` may inspect an allowed root directly
 * modifying actions (`read`, `readwrite`, and `undo`) may only operate below an allowed root
 
+If the target path does not exist, the tool exits before detecting the NFS mount or running any SSH/ACL command.
 If a path is outside allowed roots, the tool exits with code `3`.
 
 ---
@@ -283,7 +285,7 @@ This is a filesystem-level permission issue, not ownership override by ACL.
 ## Exit codes
 
 * `0` - success
-* `2` - path not on NFS
+* `2` - path does not exist or is not on NFS
 * `3` - security/configuration error
 * `130` - interrupted by user
 

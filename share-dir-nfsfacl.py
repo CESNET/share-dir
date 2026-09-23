@@ -853,6 +853,10 @@ def main() -> int:
         return handle_list()
 
     p = Path(args.path).expanduser().resolve()
+    if not p.exists():
+        log.error("Path '%s' does not exist", p)
+        return 2
+
     allow_root = args.action == "show"
     if not is_path_allowed(p, allow_root=allow_root):
         log.error(f"Path '{p}' is not allowed. Allowed roots: {SHARE_DIR_ALLOWED_ROOTS}")
